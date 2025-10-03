@@ -1,0 +1,13 @@
+Metadata-Version: 2.4
+Name: sqlitecrawler
+Version: 0.2.0
+Summary: Minimal async SQLite crawler (pages.db + crawl.db)
+Author: You
+Requires-Python: >=3.9
+Requires-Dist: aiohttp>=3.9
+Requires-Dist: aiosqlite>=0.20
+Requires-Dist: beautifulsoup4>=4.12
+Requires-Dist: lxml>=5.2
+Requires-Dist: defusedxml>=0.7
+Provides-Extra: js
+Requires-Dist: playwright>=1.48; extra == "js"

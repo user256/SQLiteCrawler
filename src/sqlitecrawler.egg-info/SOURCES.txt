@@ -1,0 +1,13 @@
+README.md
+pyproject.toml
+src/sqlitecrawler/__init__.py
+src/sqlitecrawler/config.py
+src/sqlitecrawler/crawl.py
+src/sqlitecrawler/db.py
+src/sqlitecrawler/fetch.py
+src/sqlitecrawler/parse.py
+src/sqlitecrawler.egg-info/PKG-INFO
+src/sqlitecrawler.egg-info/SOURCES.txt
+src/sqlitecrawler.egg-info/dependency_links.txt
+src/sqlitecrawler.egg-info/requires.txt
+src/sqlitecrawler.egg-info/top_level.txt

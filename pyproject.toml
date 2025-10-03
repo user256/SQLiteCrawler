@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sqlitecrawler"
+version = "0.2.0"
+description = "Minimal async SQLite crawler (pages.db + crawl.db)"
+authors = [{name = "You"}]
+requires-python = ">=3.9"
+dependencies = [
+  "aiohttp>=3.9",
+  "aiosqlite>=0.20",
+  "beautifulsoup4>=4.12",
+  "lxml>=5.2",
+  "defusedxml>=0.7",
+]
+
+[project.optional-dependencies]
+js = [
+  "playwright>=1.48",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
