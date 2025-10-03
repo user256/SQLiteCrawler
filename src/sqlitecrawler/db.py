@@ -291,25 +291,18 @@ CREATE INDEX IF NOT EXISTS idx_robots_url_id ON robots_directives(url_id);
 CREATE INDEX IF NOT EXISTS idx_robots_source ON robots_directives(source);
 CREATE INDEX IF NOT EXISTS idx_robots_directive_id ON robots_directives(directive_id);
 
--- Normalized canonical URLs table
-CREATE TABLE IF NOT EXISTS canonical_url_strings (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  canonical_url TEXT UNIQUE NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_canonical_url_strings_url ON canonical_url_strings(canonical_url);
-
--- Canonical URLs table (normalized)
+-- Canonical URLs table (references urls table directly)
 CREATE TABLE IF NOT EXISTS canonical_urls (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   url_id INTEGER NOT NULL,
-  source TEXT CHECK (source IN ('html_head', 'http_header')) NOT NULL,
   canonical_url_id INTEGER NOT NULL,
+  source TEXT CHECK (source IN ('html_head', 'http_header')) NOT NULL,
   FOREIGN KEY (url_id) REFERENCES urls (id),
-  FOREIGN KEY (canonical_url_id) REFERENCES canonical_url_strings (id)
+  FOREIGN KEY (canonical_url_id) REFERENCES urls (id)
 );
 CREATE INDEX IF NOT EXISTS idx_canonical_url_id ON canonical_urls(url_id);
+CREATE INDEX IF NOT EXISTS idx_canonical_canonical_url_id ON canonical_urls(canonical_url_id);
 CREATE INDEX IF NOT EXISTS idx_canonical_source ON canonical_urls(source);
-CREATE INDEX IF NOT EXISTS idx_canonical_url_string_id ON canonical_urls(canonical_url_id);
 
 -- Normalized hreflang language codes table
 CREATE TABLE IF NOT EXISTS hreflang_languages (
@@ -459,7 +452,7 @@ SELECT
     i.robots_txt_directives,
     i.html_meta_directives,
     i.http_header_directives,
-    GROUP_CONCAT(DISTINCT cus.canonical_url) as canonical_urls,
+    GROUP_CONCAT(DISTINCT canonical_urls_table.url) as canonical_urls,
     GROUP_CONCAT(DISTINCT cu.source) as canonical_sources,
     -- Find the hreflang language that points to this page itself (excluding x-default)
     (SELECT hl_self.language_code 
@@ -474,7 +467,7 @@ FROM urls u
 LEFT JOIN content c ON u.id = c.url_id
 LEFT JOIN indexability i ON u.id = i.url_id
 LEFT JOIN canonical_urls cu ON u.id = cu.url_id
-LEFT JOIN canonical_url_strings cus ON cu.canonical_url_id = cus.id
+LEFT JOIN urls canonical_urls_table ON cu.canonical_url_id = canonical_urls_table.id
 WHERE u.classification IN ('internal', 'network')  -- Only show internal and network URLs
 GROUP BY u.id;
 
@@ -859,11 +852,11 @@ async def batch_write_content_with_url_resolution(content_data: List[Tuple[str, 
             
             # Insert canonical URL from HTML head
             if content_info['canonical_url']:
-                canonical_url_id = await get_or_create_canonical_url_id(content_info['canonical_url'], conn)
+                canonical_url_id = await get_or_create_canonical_url_id(content_info['canonical_url'], base_domain, conn)
                 await conn.execute(
                     """
-                    INSERT OR IGNORE INTO canonical_urls(url_id, source, canonical_url_id)
-                    VALUES (?, 'html_head', ?)
+                    INSERT OR IGNORE INTO canonical_urls(url_id, canonical_url_id, source)
+                    VALUES (?, ?, 'html_head')
                     """,
                     (url_id, canonical_url_id)
                 )
@@ -1037,14 +1030,23 @@ async def get_or_create_href_id(href: str, is_absolute: bool, conn: aiosqlite.Co
     cursor = await conn.execute("INSERT INTO hrefs (href, is_absolute) VALUES (?, ?)", (href, is_absolute))
     return cursor.lastrowid
 
-async def get_or_create_canonical_url_id(canonical_url: str, conn: aiosqlite.Connection) -> int:
-    """Get or create canonical URL ID."""
-    cursor = await conn.execute("SELECT id FROM canonical_url_strings WHERE canonical_url = ?", (canonical_url,))
+async def get_or_create_canonical_url_id(canonical_url: str, base_domain: str, conn: aiosqlite.Connection) -> int:
+    """Get or create canonical URL ID in the urls table."""
+    import time
+    
+    # First try to get existing URL ID
+    cursor = await conn.execute("SELECT id FROM urls WHERE url = ?", (canonical_url,))
     row = await cursor.fetchone()
     if row:
         return row[0]
     
-    cursor = await conn.execute("INSERT INTO canonical_url_strings (canonical_url) VALUES (?)", (canonical_url,))
+    # If not found, create new URL entry
+    classification = classify_url(canonical_url, base_domain)
+    now = int(time.time())
+    cursor = await conn.execute(
+        "INSERT INTO urls (url, classification, first_seen, last_seen) VALUES (?, ?, ?, ?)",
+        (canonical_url, classification, now, now)
+    )
     return cursor.lastrowid
 
 async def get_or_create_robots_directive_id(directive: str, conn: aiosqlite.Connection) -> int:
