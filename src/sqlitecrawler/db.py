@@ -212,7 +212,7 @@ CREATE TABLE IF NOT EXISTS content (
   h1_tags TEXT,  -- JSON array of h1 texts
   h2_tags TEXT,  -- JSON array of h2 texts
   word_count INTEGER,
-  html_lang TEXT,  -- HTML lang attribute
+  html_lang_id INTEGER,  -- Reference to normalized HTML language
   internal_links_count INTEGER DEFAULT 0,
   external_links_count INTEGER DEFAULT 0,
   internal_links_unique_count INTEGER DEFAULT 0,
@@ -220,7 +220,8 @@ CREATE TABLE IF NOT EXISTS content (
   crawl_depth INTEGER DEFAULT 0,
   inlinks_count INTEGER DEFAULT 0,
   inlinks_unique_count INTEGER DEFAULT 0,
-  FOREIGN KEY (url_id) REFERENCES urls (id)
+  FOREIGN KEY (url_id) REFERENCES urls (id),
+  FOREIGN KEY (html_lang_id) REFERENCES html_languages (id)
 );
 CREATE INDEX IF NOT EXISTS idx_content_url_id ON content(url_id);
 
@@ -231,6 +232,13 @@ CREATE TABLE IF NOT EXISTS anchor_texts (
 );
 CREATE INDEX IF NOT EXISTS idx_anchor_texts_text ON anchor_texts(text);
 
+-- Normalized HTML language codes table
+CREATE TABLE IF NOT EXISTS html_languages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  language_code TEXT UNIQUE NOT NULL  -- e.g., 'en', 'en-US', 'fr-CA'
+);
+CREATE INDEX IF NOT EXISTS idx_html_languages_code ON html_languages(language_code);
+
 -- Normalized xpath table  
 CREATE TABLE IF NOT EXISTS xpaths (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -238,23 +246,14 @@ CREATE TABLE IF NOT EXISTS xpaths (
 );
 CREATE INDEX IF NOT EXISTS idx_xpaths_xpath ON xpaths(xpath);
 
--- Normalized href table (relative and absolute paths)
-CREATE TABLE IF NOT EXISTS hrefs (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  href TEXT UNIQUE NOT NULL,  -- The actual href path
-  is_absolute BOOLEAN NOT NULL  -- Whether this href is absolute or relative
-);
-CREATE INDEX IF NOT EXISTS idx_hrefs_href ON hrefs(href);
-CREATE INDEX IF NOT EXISTS idx_hrefs_absolute ON hrefs(is_absolute);
-
--- Internal links table with fully normalized references
+-- Internal links table with direct URL references
 CREATE TABLE IF NOT EXISTS internal_links (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   source_url_id INTEGER NOT NULL,
   target_url_id INTEGER,  -- NULL if target doesn't exist in our DB yet
   anchor_text_id INTEGER,  -- Reference to normalized anchor text
   xpath_id INTEGER,  -- Reference to normalized xpath
-  href_id INTEGER NOT NULL,  -- Reference to normalized href
+  href_url_id INTEGER NOT NULL,  -- The href URL (from urls table)
   url_fragment TEXT,  -- #fragment part (only if present)
   url_parameters TEXT,  -- ?param=value part (only if present)
   discovered_at INTEGER NOT NULL,
@@ -262,13 +261,14 @@ CREATE TABLE IF NOT EXISTS internal_links (
   FOREIGN KEY (target_url_id) REFERENCES urls (id),
   FOREIGN KEY (anchor_text_id) REFERENCES anchor_texts (id),
   FOREIGN KEY (xpath_id) REFERENCES xpaths (id),
-  FOREIGN KEY (href_id) REFERENCES hrefs (id),
+  FOREIGN KEY (href_url_id) REFERENCES urls (id),
   UNIQUE(source_url_id, xpath_id)  -- Prevent duplicate links with same xpath
 );
 CREATE INDEX IF NOT EXISTS idx_internal_links_source ON internal_links(source_url_id);
 CREATE INDEX IF NOT EXISTS idx_internal_links_target ON internal_links(target_url_id);
 CREATE INDEX IF NOT EXISTS idx_internal_links_anchor ON internal_links(anchor_text_id);
 CREATE INDEX IF NOT EXISTS idx_internal_links_xpath ON internal_links(xpath_id);
+CREATE INDEX IF NOT EXISTS idx_internal_links_href ON internal_links(href_url_id);
 
 -- Normalized robots directive strings table
 CREATE TABLE IF NOT EXISTS robots_directive_strings (
@@ -437,7 +437,7 @@ SELECT
     c.h1_tags,
     c.h2_tags,
     c.word_count,
-    c.html_lang,
+    hl.language_code as html_lang,
     c.internal_links_count,
     c.external_links_count,
     c.internal_links_unique_count,
@@ -465,6 +465,7 @@ SELECT
      LIMIT 1) as self_hreflang
 FROM urls u
 LEFT JOIN content c ON u.id = c.url_id
+LEFT JOIN html_languages hl ON c.html_lang_id = hl.id
 LEFT JOIN indexability i ON u.id = i.url_id
 LEFT JOIN canonical_urls cu ON u.id = cu.url_id
 LEFT JOIN urls canonical_urls_table ON cu.canonical_url_id = canonical_urls_table.id
@@ -478,8 +479,8 @@ SELECT
     u2.url as target_url,
     at.text as anchor_text,
     x.xpath,
-    h.href,
-    h.is_absolute,
+    href_urls.url as href,
+    href_urls.classification as href_classification,
     il.url_fragment,
     il.url_parameters,
     il.discovered_at
@@ -488,7 +489,7 @@ JOIN urls u1 ON il.source_url_id = u1.id
 LEFT JOIN urls u2 ON il.target_url_id = u2.id
 LEFT JOIN anchor_texts at ON il.anchor_text_id = at.id
 LEFT JOIN xpaths x ON il.xpath_id = x.id
-LEFT JOIN hrefs h ON il.href_id = h.id;
+LEFT JOIN urls href_urls ON il.href_url_id = href_urls.id;
 """
 
 async def init_pages_db(db_path: str = PAGES_DB_PATH):
@@ -802,10 +803,13 @@ async def batch_write_content_with_url_resolution(content_data: List[Tuple[str, 
             
             url_id = row[0]
             
+            # Get or create HTML language ID
+            html_lang_id = await get_or_create_html_language_id(content_info['html_lang'], conn)
+            
             # Insert/update content
             await conn.execute(
                 """
-                INSERT INTO content(url_id, title, meta_description, h1_tags, h2_tags, word_count, html_lang)
+                INSERT INTO content(url_id, title, meta_description, h1_tags, h2_tags, word_count, html_lang_id)
                 VALUES (?,?,?,?,?,?,?)
                 ON CONFLICT(url_id) DO UPDATE SET
                   title=excluded.title,
@@ -813,7 +817,7 @@ async def batch_write_content_with_url_resolution(content_data: List[Tuple[str, 
                   h1_tags=excluded.h1_tags,
                   h2_tags=excluded.h2_tags,
                   word_count=excluded.word_count,
-                  html_lang=excluded.html_lang
+                  html_lang_id=excluded.html_lang_id
                 """,
                 (
                     url_id,
@@ -822,7 +826,7 @@ async def batch_write_content_with_url_resolution(content_data: List[Tuple[str, 
                     json.dumps(content_info['h1_tags'], ensure_ascii=False),
                     json.dumps(content_info['h2_tags'], ensure_ascii=False),
                     content_info['word_count'],
-                    content_info['html_lang']
+                    html_lang_id
                 )
             )
             
@@ -938,7 +942,7 @@ async def batch_write_internal_links(links_data: List[Tuple[str, list, str]], cr
                 # Get or create normalized IDs
                 anchor_text_id = await get_or_create_anchor_text_id(link_info['anchor_text'], conn)
                 xpath_id = await get_or_create_xpath_id(link_info['xpath'], conn)
-                href_id = await get_or_create_href_id(url_components['href'], url_components['is_absolute'], conn)
+                href_url_id = await get_or_create_href_url_id(url_components['href'], base_domain, conn)
                 
                 # Try to get target URL ID (may not exist yet)
                 target_url_id = None
@@ -959,7 +963,7 @@ async def batch_write_internal_links(links_data: List[Tuple[str, list, str]], cr
                     await conn.execute(
                         """
                         INSERT OR IGNORE INTO internal_links(
-                            source_url_id, target_url_id, anchor_text_id, xpath_id, href_id,
+                            source_url_id, target_url_id, anchor_text_id, xpath_id, href_url_id,
                             url_fragment, url_parameters, discovered_at
                         )
                         VALUES (?,?,?,?,?,?,?,?)
@@ -969,7 +973,7 @@ async def batch_write_internal_links(links_data: List[Tuple[str, list, str]], cr
                             target_url_id,
                             anchor_text_id,
                             xpath_id,
-                            href_id,
+                            href_url_id,
                             url_components['url_fragment'],
                             url_components['url_parameters'],
                             now
@@ -1020,14 +1024,23 @@ async def get_or_create_xpath_id(xpath: str, conn: aiosqlite.Connection) -> int:
     cursor = await conn.execute("INSERT INTO xpaths (xpath) VALUES (?)", (xpath,))
     return cursor.lastrowid
 
-async def get_or_create_href_id(href: str, is_absolute: bool, conn: aiosqlite.Connection) -> int:
-    """Get or create href ID."""
-    cursor = await conn.execute("SELECT id FROM hrefs WHERE href = ?", (href,))
+async def get_or_create_href_url_id(href: str, base_domain: str, conn: aiosqlite.Connection) -> int:
+    """Get or create href URL ID in the urls table."""
+    import time
+    
+    # First try to get existing URL ID
+    cursor = await conn.execute("SELECT id FROM urls WHERE url = ?", (href,))
     row = await cursor.fetchone()
     if row:
         return row[0]
     
-    cursor = await conn.execute("INSERT INTO hrefs (href, is_absolute) VALUES (?, ?)", (href, is_absolute))
+    # If not found, create new URL entry
+    classification = classify_url(href, base_domain)
+    now = int(time.time())
+    cursor = await conn.execute(
+        "INSERT INTO urls (url, classification, first_seen, last_seen) VALUES (?, ?, ?, ?)",
+        (href, classification, now, now)
+    )
     return cursor.lastrowid
 
 async def get_or_create_canonical_url_id(canonical_url: str, base_domain: str, conn: aiosqlite.Connection) -> int:
@@ -1093,6 +1106,20 @@ def parse_url_components(href: str, base_url: str) -> dict:
         'url_parameters': url_parameters,
         'is_absolute': is_absolute
     }
+
+async def get_or_create_html_language_id(language_code: str, conn: aiosqlite.Connection) -> int:
+    """Get or create HTML language ID."""
+    if not language_code:
+        return None
+    
+    cursor = await conn.execute("SELECT id FROM html_languages WHERE language_code = ?", (language_code,))
+    row = await cursor.fetchone()
+    if row:
+        return row[0]
+    
+    # Create new language code
+    cursor = await conn.execute("INSERT INTO html_languages(language_code) VALUES (?)", (language_code,))
+    return cursor.lastrowid
 
 async def get_or_create_hreflang_language_id(language_code: str, conn: aiosqlite.Connection) -> int:
     """Get or create hreflang language ID."""
