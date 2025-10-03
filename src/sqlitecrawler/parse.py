@@ -56,6 +56,56 @@ def extract_links_from_html(html: str, base_url: str) -> list[str]:
         links.append(normalize_url(base_url, a["href"]))
     return links
 
+def extract_links_with_metadata(html: str, base_url: str) -> tuple[list[str], list[dict]]:
+    """
+    Extract links with anchor text and xpath metadata.
+    Returns (simple_links_list, detailed_links_list)
+    """
+    soup = BeautifulSoup(html, "lxml")
+    simple_links = []
+    detailed_links = []
+    
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        normalized_url = normalize_url(base_url, href)
+        simple_links.append(normalized_url)
+        
+        # Extract anchor text (strip whitespace)
+        anchor_text = a.get_text(strip=True)
+        
+        # Generate xpath for the link element
+        xpath = generate_xpath(a)
+        
+        detailed_links.append({
+            "url": normalized_url,
+            "anchor_text": anchor_text,
+            "xpath": xpath,
+            "href": href  # Original href before normalization
+        })
+    
+    return simple_links, detailed_links
+
+def generate_xpath(element) -> str:
+    """Generate xpath for a BeautifulSoup element."""
+    path = []
+    current = element
+    
+    while current and current.name:
+        # Get tag name
+        tag = current.name
+        
+        # Check if we need to add position index
+        if current.parent:
+            siblings = [s for s in current.parent.find_all(tag, recursive=False) if s.name == tag]
+            if len(siblings) > 1:
+                position = siblings.index(current) + 1
+                tag = f"{tag}[{position}]"
+        
+        path.insert(0, tag)
+        current = current.parent
+    
+    return "/" + "/".join(path) if path else ""
+
 # naive extract from XML sitemap/index
 
 def extract_from_sitemap(xml_text: str) -> Tuple[str, list[str]]:

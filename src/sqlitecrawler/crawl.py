@@ -1,5 +1,7 @@
 from __future__ import annotations
 import asyncio
+import signal
+import sys
 from urllib.parse import urlsplit, urlparse, urlunparse
 from typing import Iterable, Tuple, List, Optional
 from concurrent.futures import ThreadPoolExecutor
@@ -22,10 +24,11 @@ from .db import (
     batch_write_hreflang_sitemap_data,
     batch_write_sitemap_validation,
     batch_write_redirects,
+    batch_write_internal_links,
     extract_content_from_html,
 )
 from .fetch import fetch_many, fetch_many_with_redirect_tracking
-from .parse import classify, extract_links_from_html, extract_from_sitemap
+from .parse import classify, extract_links_from_html, extract_links_with_metadata, extract_from_sitemap
 from .robots import discover_sitemaps_from_domain, crawl_sitemaps_recursive, parse_robots_txt
 
 def _same_host(a: str, b: str) -> bool:
@@ -57,11 +60,11 @@ def normalize_headers(headers: dict) -> dict:
             normalized[key_lower] = str(value).strip()
     return normalized
 
-def should_crawl_url(url: str, base_domain: str, allow_external: bool) -> bool:
+def should_crawl_url(url: str, base_domain: str, allow_external: bool, is_from_sitemap: bool = False) -> bool:
     """Determine if a URL should be crawled based on classification and settings."""
     from .db import classify_url
     
-    classification = classify_url(url, base_domain)
+    classification = classify_url(url, base_domain, is_from_sitemap)
     
     # Always crawl internal URLs
     if classification == 'internal':
@@ -81,12 +84,29 @@ def should_crawl_url(url: str, base_domain: str, allow_external: bool) -> bool:
     
     return False
 
+# Global flag for graceful shutdown
+shutdown_requested = False
+
+def signal_handler(signum, frame):
+    """Handle interrupt signals for graceful shutdown."""
+    global shutdown_requested
+    print(f"\nReceived signal {signum}. Gracefully shutting down...")
+    print("Press Ctrl+C again to force quit.")
+    shutdown_requested = True
+
 async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = None, reset_frontier: bool = False, http_config: HttpConfig | None = None, allow_external: bool = False, max_workers: int = 4, verbose: bool = False):
     """Persistent breadth-first crawl with pause/resume.
     - Seeds the frontier if empty (or `reset_frontier=True`).
     - Respects `limits.max_pages`, `limits.max_depth`, and `limits.same_host_only`.
     - Stores pages in website-specific pages.db and discovered URLs/types in website-specific crawl.db.
+    - Supports graceful shutdown with Ctrl+C (SIGINT) or SIGTERM.
     """
+    global shutdown_requested
+    
+    # Set up signal handlers for graceful shutdown
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
     cfg = http_config or HttpConfig()
     limits = limits or CrawlLimits()
     
@@ -168,18 +188,40 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
             print(f"Writing {len(hreflang_data_to_write)} hreflang entries to database...")
             await batch_write_hreflang_sitemap_data(hreflang_data_to_write, crawl_db_path)
         
-        # Add sitemap URLs to frontier (limited to max_pages) - AFTER start URL
+        # Add sitemap URLs to frontier - AFTER start URL
         sitemap_urls_list = list(sitemap_urls_dict.keys())
-        for url in sitemap_urls_list[:limits.max_pages]:  # Limit to max_pages
-            url_norm = normalize_url_for_storage(url)
-            await frontier_seed(url_norm, base_domain, reset=False, db_path=crawl_db_path)  # Don't reset frontier
-        
-        print(f"Added {min(len(sitemap_urls_list), limits.max_pages)} URLs from sitemaps to frontier")
+        if limits.max_pages > 0:
+            # If there's a limit, only add up to that many URLs
+            for url in sitemap_urls_list[:limits.max_pages]:
+                url_norm = normalize_url_for_storage(url)
+                await frontier_seed(url_norm, base_domain, reset=False, db_path=crawl_db_path)
+            print(f"Added {min(len(sitemap_urls_list), limits.max_pages)} URLs from sitemaps to frontier")
+        else:
+            # No limit - add all sitemap URLs
+            for url in sitemap_urls_list:
+                url_norm = normalize_url_for_storage(url)
+                await frontier_seed(url_norm, base_domain, reset=False, db_path=crawl_db_path)
+            print(f"Added {len(sitemap_urls_list)} URLs from sitemaps to frontier")
 
     processed = 0
-    while processed < limits.max_pages:
-        batch = await frontier_next_batch(min(cfg.max_concurrency, limits.max_pages - processed), db_path=crawl_db_path)
+    while True:
+        # Check for shutdown request
+        if shutdown_requested:
+            print("Shutdown requested. Saving progress and exiting gracefully...")
+            break
+            
+        # Determine batch size based on whether there's a limit
+        if limits.max_pages > 0:
+            remaining = limits.max_pages - processed
+            if remaining <= 0:
+                break
+            batch_size = min(cfg.max_concurrency, remaining)
+        else:
+            batch_size = cfg.max_concurrency
+            
+        batch = await frontier_next_batch(batch_size, db_path=crawl_db_path)
         if not batch:
+            print("No more URLs in frontier - crawl complete!")
             break
 
         urls = [u for (u, _d, _p) in batch]
@@ -197,6 +239,7 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
         urls_to_upsert = []
         children_to_enqueue = []
         content_to_write = []
+        links_to_write = []
         redirect_data_to_write = []
 
         for (status, final_url, headers, text, original, redirect_chain_json) in results:
@@ -244,14 +287,14 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
                         child_norm = normalize_url_for_storage(child)
                         
                         # Check if URL should be crawled based on classification
-                        if should_crawl_url(child_norm, base_domain, allow_external):
+                        if should_crawl_url(child_norm, base_domain, allow_external, is_from_sitemap=True):
                             children_to_enqueue.append((child_norm, depth + 1, original_norm, base_domain))
                             print(f"  -> Enqueued from sitemap: {child_norm}")
                         else:
                             # Record but don't crawl
                             urls_to_upsert.append((child_norm, "other", base_domain, original_norm))
                             from .db import classify_url
-                            classification = classify_url(child_norm, base_domain)
+                            classification = classify_url(child_norm, base_domain, is_from_sitemap=True)
                             print(f"  -> {classification.title()} URL from sitemap recorded: {child_norm}")
             elif k == "html":
                 urls_to_upsert.append((original_norm, "html", base_domain, parent_norm or normalize_url_for_storage(start)))
@@ -265,20 +308,26 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
                         # The actual URL ID will be resolved during batch processing
                         content_to_write.append((original_norm, content_data, base_domain))
                 if depth < limits.max_depth and text:
-                    links = extract_links_from_html(text, final_norm)
+                    # Extract links with metadata for internal links tracking
+                    links, detailed_links = extract_links_with_metadata(text, final_norm)
                     print(f"  -> Found {len(links)} links in HTML")
+                    
+                    # Store detailed links data for internal links table
+                    if detailed_links:
+                        links_to_write.append((original_norm, detailed_links, base_domain))
+                    
                     for child in links:
                         child_norm = normalize_url_for_storage(child)
                         
                         # Check if URL should be crawled based on classification
-                        if should_crawl_url(child_norm, base_domain, allow_external):
+                        if should_crawl_url(child_norm, base_domain, allow_external, is_from_sitemap=False):
                             children_to_enqueue.append((child_norm, depth + 1, original_norm, base_domain))
                             print(f"  -> Enqueued: {child_norm}")
                         else:
                             # Record but don't crawl
                             urls_to_upsert.append((child_norm, "other", base_domain, original_norm))
                             from .db import classify_url
-                            classification = classify_url(child_norm, base_domain)
+                            classification = classify_url(child_norm, base_domain, is_from_sitemap=False)
                             print(f"  -> {classification.title()} URL recorded: {child_norm}")
             else:
                 urls_to_upsert.append((original_norm, k, base_domain, parent_norm or normalize_url_for_storage(start)))
@@ -306,6 +355,11 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
             print(f"  -> Writing {len(content_to_write)} content extractions to database...")
             await batch_write_content_with_url_resolution(content_to_write, crawl_db_path)
         
+        # Batch write internal links data (after URLs are upserted so we can get URL IDs)
+        if links_to_write:
+            print(f"  -> Writing {len(links_to_write)} internal links to database...")
+            await batch_write_internal_links(links_to_write, crawl_db_path)
+        
         # Batch write redirect data (after URLs are upserted so we can get URL IDs)
         if redirect_data_to_write:
             print(f"  -> Writing {len(redirect_data_to_write)} redirect chains to database...")
@@ -313,12 +367,20 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
         
         processed += len(results)
         
-        print(f"Batch complete: processed {len(results)} URLs, enqueued {len(to_enqueue)} new URLs")
-        print(f"Total processed so far: {processed}/{limits.max_pages}")
+        print(f"Batch complete: processed {len(results)} URLs, enqueued {len(children_to_enqueue)} new URLs")
+        if limits.max_pages > 0:
+            print(f"Total processed so far: {processed}/{limits.max_pages}")
+        else:
+            print(f"Total processed so far: {processed} (no limit)")
         print()
 
     q, d = await frontier_stats(db_path=crawl_db_path)
     print(f"Frontier status — queued: {q}, done: {d}")
+    
+    if shutdown_requested:
+        print("Crawl paused. Run the same command again to resume from where you left off.")
+    else:
+        print("Crawl completed successfully!")
 
 if __name__ == "__main__":
     asyncio.run(crawl("https://example.com/", use_js=False, reset_frontier=True))

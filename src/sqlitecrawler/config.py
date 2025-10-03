@@ -11,8 +11,8 @@ os.makedirs(DATA_DIR, exist_ok=True)
 class HttpConfig:
     user_agent: str = os.getenv("SQLITECRAWLER_UA", "SQLiteCrawler/0.2 (+https://github.com/user256/SQLiteCrawler)")
     timeout: int = int(os.getenv("SQLITECRAWLER_TIMEOUT", "20"))
-    max_concurrency: int = int(os.getenv("SQLITECRAWLER_CONCURRENCY", "10"))
-    delay_between_requests: float = float(os.getenv("SQLITECRAWLER_DELAY", "0.1"))
+    max_concurrency: int = int(os.getenv("SQLITECRAWLER_CONCURRENCY", "5"))
+    delay_between_requests: float = float(os.getenv("SQLITECRAWLER_DELAY", "0.2"))
     respect_robots_txt: bool = os.getenv("SQLITECRAWLER_RESPECT_ROBOTS", "1") == "1"
     ignore_robots_crawlability: bool = False
     skip_robots_sitemaps: bool = False
@@ -20,7 +20,7 @@ class HttpConfig:
 
 @dataclass
 class CrawlLimits:
-    max_pages: int = int(os.getenv("SQLITECRAWLER_MAX_PAGES", "500"))
+    max_pages: int = int(os.getenv("SQLITECRAWLER_MAX_PAGES", "0"))  # 0 = no limit
     max_depth: int = int(os.getenv("SQLITECRAWLER_MAX_DEPTH", "3"))
     same_host_only: bool = os.getenv("SQLITECRAWLER_SAME_HOST_ONLY", "1") == "1"
 

@@ -213,32 +213,103 @@ CREATE TABLE IF NOT EXISTS content (
   h2_tags TEXT,  -- JSON array of h2 texts
   word_count INTEGER,
   html_lang TEXT,  -- HTML lang attribute
+  internal_links_count INTEGER DEFAULT 0,
+  external_links_count INTEGER DEFAULT 0,
+  internal_links_unique_count INTEGER DEFAULT 0,
+  external_links_unique_count INTEGER DEFAULT 0,
+  crawl_depth INTEGER DEFAULT 0,
+  inlinks_count INTEGER DEFAULT 0,
+  inlinks_unique_count INTEGER DEFAULT 0,
   FOREIGN KEY (url_id) REFERENCES urls (id)
 );
 CREATE INDEX IF NOT EXISTS idx_content_url_id ON content(url_id);
+
+-- Normalized anchor text table
+CREATE TABLE IF NOT EXISTS anchor_texts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  text TEXT UNIQUE NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_anchor_texts_text ON anchor_texts(text);
+
+-- Normalized xpath table  
+CREATE TABLE IF NOT EXISTS xpaths (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  xpath TEXT UNIQUE NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_xpaths_xpath ON xpaths(xpath);
+
+-- Normalized href table (relative and absolute paths)
+CREATE TABLE IF NOT EXISTS hrefs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  href TEXT UNIQUE NOT NULL,  -- The actual href path
+  is_absolute BOOLEAN NOT NULL  -- Whether this href is absolute or relative
+);
+CREATE INDEX IF NOT EXISTS idx_hrefs_href ON hrefs(href);
+CREATE INDEX IF NOT EXISTS idx_hrefs_absolute ON hrefs(is_absolute);
+
+-- Internal links table with fully normalized references
+CREATE TABLE IF NOT EXISTS internal_links (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_url_id INTEGER NOT NULL,
+  target_url_id INTEGER,  -- NULL if target doesn't exist in our DB yet
+  anchor_text_id INTEGER,  -- Reference to normalized anchor text
+  xpath_id INTEGER,  -- Reference to normalized xpath
+  href_id INTEGER NOT NULL,  -- Reference to normalized href
+  url_fragment TEXT,  -- #fragment part (only if present)
+  url_parameters TEXT,  -- ?param=value part (only if present)
+  discovered_at INTEGER NOT NULL,
+  FOREIGN KEY (source_url_id) REFERENCES urls (id),
+  FOREIGN KEY (target_url_id) REFERENCES urls (id),
+  FOREIGN KEY (anchor_text_id) REFERENCES anchor_texts (id),
+  FOREIGN KEY (xpath_id) REFERENCES xpaths (id),
+  FOREIGN KEY (href_id) REFERENCES hrefs (id),
+  UNIQUE(source_url_id, xpath_id)  -- Prevent duplicate links with same xpath
+);
+CREATE INDEX IF NOT EXISTS idx_internal_links_source ON internal_links(source_url_id);
+CREATE INDEX IF NOT EXISTS idx_internal_links_target ON internal_links(target_url_id);
+CREATE INDEX IF NOT EXISTS idx_internal_links_anchor ON internal_links(anchor_text_id);
+CREATE INDEX IF NOT EXISTS idx_internal_links_xpath ON internal_links(xpath_id);
+
+-- Normalized robots directive strings table
+CREATE TABLE IF NOT EXISTS robots_directive_strings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  directive TEXT UNIQUE NOT NULL  -- e.g., 'noindex', 'nofollow', 'noarchive'
+);
+CREATE INDEX IF NOT EXISTS idx_robots_directive_strings_directive ON robots_directive_strings(directive);
 
 -- Robots directives table (normalized)
 CREATE TABLE IF NOT EXISTS robots_directives (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   url_id INTEGER NOT NULL,
   source TEXT CHECK (source IN ('robots_txt', 'html_meta', 'http_header')) NOT NULL,
-  directive TEXT NOT NULL,  -- e.g., 'noindex', 'nofollow', 'noarchive'
+  directive_id INTEGER NOT NULL,  -- Reference to normalized directive
   value TEXT,  -- directive value if applicable
-  FOREIGN KEY (url_id) REFERENCES urls (id)
+  FOREIGN KEY (url_id) REFERENCES urls (id),
+  FOREIGN KEY (directive_id) REFERENCES robots_directive_strings (id)
 );
 CREATE INDEX IF NOT EXISTS idx_robots_url_id ON robots_directives(url_id);
 CREATE INDEX IF NOT EXISTS idx_robots_source ON robots_directives(source);
+CREATE INDEX IF NOT EXISTS idx_robots_directive_id ON robots_directives(directive_id);
+
+-- Normalized canonical URLs table
+CREATE TABLE IF NOT EXISTS canonical_url_strings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  canonical_url TEXT UNIQUE NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_canonical_url_strings_url ON canonical_url_strings(canonical_url);
 
 -- Canonical URLs table (normalized)
 CREATE TABLE IF NOT EXISTS canonical_urls (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   url_id INTEGER NOT NULL,
   source TEXT CHECK (source IN ('html_head', 'http_header')) NOT NULL,
-  canonical_url TEXT NOT NULL,
-  FOREIGN KEY (url_id) REFERENCES urls (id)
+  canonical_url_id INTEGER NOT NULL,
+  FOREIGN KEY (url_id) REFERENCES urls (id),
+  FOREIGN KEY (canonical_url_id) REFERENCES canonical_url_strings (id)
 );
 CREATE INDEX IF NOT EXISTS idx_canonical_url_id ON canonical_urls(url_id);
 CREATE INDEX IF NOT EXISTS idx_canonical_source ON canonical_urls(source);
+CREATE INDEX IF NOT EXISTS idx_canonical_url_string_id ON canonical_urls(canonical_url_id);
 
 -- Normalized hreflang language codes table
 CREATE TABLE IF NOT EXISTS hreflang_languages (
@@ -350,6 +421,18 @@ CREATE TABLE IF NOT EXISTS frontier (
 CREATE INDEX IF NOT EXISTS idx_frontier_status ON frontier(status);
 CREATE INDEX IF NOT EXISTS idx_frontier_url_id ON frontier(url_id);
 
+-- Sitemap tracking table
+CREATE TABLE IF NOT EXISTS sitemaps_listed (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  url_id INTEGER NOT NULL,
+  sitemap_url TEXT NOT NULL,  -- Which sitemap this URL was found in
+  sitemap_position INTEGER,  -- Position in sitemap (if available)
+  discovered_at INTEGER NOT NULL,
+  FOREIGN KEY (url_id) REFERENCES urls (id)
+);
+CREATE INDEX IF NOT EXISTS idx_sitemaps_listed_url_id ON sitemaps_listed(url_id);
+CREATE INDEX IF NOT EXISTS idx_sitemaps_listed_sitemap ON sitemaps_listed(sitemap_url);
+
 -- View for comprehensive page analysis
 CREATE VIEW IF NOT EXISTS page_analysis AS
 SELECT 
@@ -362,6 +445,13 @@ SELECT
     c.h2_tags,
     c.word_count,
     c.html_lang,
+    c.internal_links_count,
+    c.external_links_count,
+    c.internal_links_unique_count,
+    c.external_links_unique_count,
+    c.crawl_depth,
+    c.inlinks_count,
+    c.inlinks_unique_count,
     i.robots_txt_allows,
     i.html_meta_allows,
     i.http_header_allows,
@@ -369,7 +459,7 @@ SELECT
     i.robots_txt_directives,
     i.html_meta_directives,
     i.http_header_directives,
-    GROUP_CONCAT(DISTINCT cu.canonical_url) as canonical_urls,
+    GROUP_CONCAT(DISTINCT cus.canonical_url) as canonical_urls,
     GROUP_CONCAT(DISTINCT cu.source) as canonical_sources,
     -- Find the hreflang language that points to this page itself (excluding x-default)
     (SELECT hl_self.language_code 
@@ -384,7 +474,28 @@ FROM urls u
 LEFT JOIN content c ON u.id = c.url_id
 LEFT JOIN indexability i ON u.id = i.url_id
 LEFT JOIN canonical_urls cu ON u.id = cu.url_id
+LEFT JOIN canonical_url_strings cus ON cu.canonical_url_id = cus.id
+WHERE u.classification IN ('internal', 'network')  -- Only show internal and network URLs
 GROUP BY u.id;
+
+-- View for internal links with normalized data
+CREATE VIEW IF NOT EXISTS internal_links_analysis AS
+SELECT 
+    u1.url as source_url,
+    u2.url as target_url,
+    at.text as anchor_text,
+    x.xpath,
+    h.href,
+    h.is_absolute,
+    il.url_fragment,
+    il.url_parameters,
+    il.discovered_at
+FROM internal_links il
+JOIN urls u1 ON il.source_url_id = u1.id
+LEFT JOIN urls u2 ON il.target_url_id = u2.id
+LEFT JOIN anchor_texts at ON il.anchor_text_id = at.id
+LEFT JOIN xpaths x ON il.xpath_id = x.id
+LEFT JOIN hrefs h ON il.href_id = h.id;
 """
 
 async def init_pages_db(db_path: str = PAGES_DB_PATH):
@@ -725,33 +836,36 @@ async def batch_write_content_with_url_resolution(content_data: List[Tuple[str, 
             # Insert robots directives from HTML meta
             if content_info['html_meta_directives']:
                 for directive in content_info['html_meta_directives']:
+                    directive_id = await get_or_create_robots_directive_id(directive, conn)
                     await conn.execute(
                         """
-                        INSERT OR IGNORE INTO robots_directives(url_id, source, directive)
+                        INSERT OR IGNORE INTO robots_directives(url_id, source, directive_id)
                         VALUES (?, 'html_meta', ?)
                         """,
-                        (url_id, directive)
+                        (url_id, directive_id)
                     )
             
             # Insert robots directives from HTTP headers
             if content_info['http_header_directives']:
                 for directive in content_info['http_header_directives']:
+                    directive_id = await get_or_create_robots_directive_id(directive, conn)
                     await conn.execute(
                         """
-                        INSERT OR IGNORE INTO robots_directives(url_id, source, directive)
+                        INSERT OR IGNORE INTO robots_directives(url_id, source, directive_id)
                         VALUES (?, 'http_header', ?)
                         """,
-                        (url_id, directive)
+                        (url_id, directive_id)
                     )
             
             # Insert canonical URL from HTML head
             if content_info['canonical_url']:
+                canonical_url_id = await get_or_create_canonical_url_id(content_info['canonical_url'], conn)
                 await conn.execute(
                     """
-                    INSERT OR IGNORE INTO canonical_urls(url_id, source, canonical_url)
+                    INSERT OR IGNORE INTO canonical_urls(url_id, source, canonical_url_id)
                     VALUES (?, 'html_head', ?)
                     """,
-                    (url_id, content_info['canonical_url'])
+                    (url_id, canonical_url_id)
                 )
             
             # Calculate indexability
@@ -782,6 +896,185 @@ async def batch_write_content_with_url_resolution(content_data: List[Tuple[str, 
             )
         
         await conn.commit()
+
+async def batch_write_internal_links(links_data: List[Tuple[str, list, str]], crawl_db_path: str):
+    """Write internal links data with normalized references and URL components."""
+    if not links_data:
+        return
+    
+    async with aiosqlite.connect(crawl_db_path) as conn:
+        for source_url, detailed_links, base_domain in links_data:
+            # Get source URL ID
+            cursor = await conn.execute("SELECT id FROM urls WHERE url = ?", (source_url,))
+            row = await cursor.fetchone()
+            if not row:
+                continue
+            
+            source_url_id = row[0]
+            now = int(time.time())
+            
+            # Count internal vs external links
+            internal_count = 0
+            external_count = 0
+            internal_unique = set()
+            external_unique = set()
+            
+            for link_info in detailed_links:
+                target_url = link_info['url']
+                href_original = link_info['href']
+                
+                # Parse URL components
+                url_components = parse_url_components(href_original, source_url)
+                
+                # Get or create normalized IDs
+                anchor_text_id = await get_or_create_anchor_text_id(link_info['anchor_text'], conn)
+                xpath_id = await get_or_create_xpath_id(link_info['xpath'], conn)
+                href_id = await get_or_create_href_id(url_components['href'], url_components['is_absolute'], conn)
+                
+                # Try to get target URL ID (may not exist yet)
+                target_url_id = None
+                if url_components['href']:
+                    cursor = await conn.execute("SELECT id FROM urls WHERE url = ?", (url_components['href'],))
+                    row = await cursor.fetchone()
+                    if row:
+                        target_url_id = row[0]
+                
+                # Classify the link
+                classification = classify_url(target_url, base_domain)
+                
+                if classification == 'internal':
+                    internal_count += 1
+                    internal_unique.add(url_components['href'])
+                    
+                    # Insert internal link with fully normalized references
+                    await conn.execute(
+                        """
+                        INSERT OR IGNORE INTO internal_links(
+                            source_url_id, target_url_id, anchor_text_id, xpath_id, href_id,
+                            url_fragment, url_parameters, discovered_at
+                        )
+                        VALUES (?,?,?,?,?,?,?,?)
+                        """,
+                        (
+                            source_url_id,
+                            target_url_id,
+                            anchor_text_id,
+                            xpath_id,
+                            href_id,
+                            url_components['url_fragment'],
+                            url_components['url_parameters'],
+                            now
+                        )
+                    )
+                else:
+                    external_count += 1
+                    external_unique.add(url_components['href'])
+            
+            # Update content table with link counts
+            await conn.execute(
+                """
+                UPDATE content 
+                SET internal_links_count = ?, 
+                    external_links_count = ?,
+                    internal_links_unique_count = ?,
+                    external_links_unique_count = ?
+                WHERE url_id = ?
+                """,
+                (
+                    internal_count,
+                    external_count,
+                    len(internal_unique),
+                    len(external_unique),
+                    source_url_id
+                )
+            )
+        
+        await conn.commit()
+
+async def get_or_create_anchor_text_id(anchor_text: str, conn: aiosqlite.Connection) -> int:
+    """Get or create anchor text ID."""
+    cursor = await conn.execute("SELECT id FROM anchor_texts WHERE text = ?", (anchor_text,))
+    row = await cursor.fetchone()
+    if row:
+        return row[0]
+    
+    cursor = await conn.execute("INSERT INTO anchor_texts (text) VALUES (?)", (anchor_text,))
+    return cursor.lastrowid
+
+async def get_or_create_xpath_id(xpath: str, conn: aiosqlite.Connection) -> int:
+    """Get or create xpath ID."""
+    cursor = await conn.execute("SELECT id FROM xpaths WHERE xpath = ?", (xpath,))
+    row = await cursor.fetchone()
+    if row:
+        return row[0]
+    
+    cursor = await conn.execute("INSERT INTO xpaths (xpath) VALUES (?)", (xpath,))
+    return cursor.lastrowid
+
+async def get_or_create_href_id(href: str, is_absolute: bool, conn: aiosqlite.Connection) -> int:
+    """Get or create href ID."""
+    cursor = await conn.execute("SELECT id FROM hrefs WHERE href = ?", (href,))
+    row = await cursor.fetchone()
+    if row:
+        return row[0]
+    
+    cursor = await conn.execute("INSERT INTO hrefs (href, is_absolute) VALUES (?, ?)", (href, is_absolute))
+    return cursor.lastrowid
+
+async def get_or_create_canonical_url_id(canonical_url: str, conn: aiosqlite.Connection) -> int:
+    """Get or create canonical URL ID."""
+    cursor = await conn.execute("SELECT id FROM canonical_url_strings WHERE canonical_url = ?", (canonical_url,))
+    row = await cursor.fetchone()
+    if row:
+        return row[0]
+    
+    cursor = await conn.execute("INSERT INTO canonical_url_strings (canonical_url) VALUES (?)", (canonical_url,))
+    return cursor.lastrowid
+
+async def get_or_create_robots_directive_id(directive: str, conn: aiosqlite.Connection) -> int:
+    """Get or create robots directive ID."""
+    cursor = await conn.execute("SELECT id FROM robots_directive_strings WHERE directive = ?", (directive,))
+    row = await cursor.fetchone()
+    if row:
+        return row[0]
+    
+    cursor = await conn.execute("INSERT INTO robots_directive_strings (directive) VALUES (?)", (directive,))
+    return cursor.lastrowid
+
+def parse_url_components(href: str, base_url: str) -> dict:
+    """Parse URL into components: href (without fragment/params), fragment, parameters."""
+    from urllib.parse import urlparse, urljoin, parse_qs, urlunparse
+    
+    # Parse the original href
+    parsed_href = urlparse(href)
+    is_absolute = bool(parsed_href.netloc)
+    
+    # Create href without fragment and parameters
+    clean_href = urlunparse((parsed_href.scheme, parsed_href.netloc, parsed_href.path, 
+                           parsed_href.params, '', ''))
+    
+    # If relative, try to resolve to absolute
+    if not is_absolute:
+        try:
+            resolved = urljoin(base_url, clean_href)
+            clean_href = resolved
+        except:
+            pass  # Keep original if resolution fails
+    
+    # Extract fragment and parameters (only if present)
+    url_fragment = parsed_href.fragment if parsed_href.fragment else None
+    url_parameters = None
+    if parsed_href.query:
+        # Convert query string to a more readable format
+        params = parse_qs(parsed_href.query)
+        url_parameters = "&".join([f"{k}={v[0]}" for k, v in params.items()])
+    
+    return {
+        'href': clean_href,
+        'url_fragment': url_fragment,
+        'url_parameters': url_parameters,
+        'is_absolute': is_absolute
+    }
 
 async def get_or_create_hreflang_language_id(language_code: str, conn: aiosqlite.Connection) -> int:
     """Get or create hreflang language ID."""
@@ -960,15 +1253,18 @@ async def frontier_seed(start: str, base_domain: str, reset: bool = False, db_pa
     async with aiosqlite.connect(db_path) as db:
         if reset:
             await db.execute("DELETE FROM frontier")
-        # only insert if empty
-        cur = await db.execute("SELECT COUNT(*) FROM frontier")
-        (cnt,) = await cur.fetchone()
-        if cnt == 0:
+            # After reset, always add the start URL
             await db.execute(
                 "INSERT OR IGNORE INTO frontier(url_id, depth, parent_id, status, enqueued_at, updated_at) VALUES (?,?,?,?,?,?)",
                 (start_url_id, 0, None, 'queued', now, now),
             )
-            await db.commit()
+        else:
+            # For non-reset calls (like sitemap URLs), always try to add
+            await db.execute(
+                "INSERT OR IGNORE INTO frontier(url_id, depth, parent_id, status, enqueued_at, updated_at) VALUES (?,?,?,?,?,?)",
+                (start_url_id, 0, None, 'queued', now, now),
+            )
+        await db.commit()
 
 async def frontier_next_batch(limit: int, db_path: str = CRAWL_DB_PATH) -> List[Tuple[str, int, Optional[str]]]:
     async with aiosqlite.connect(db_path) as db:

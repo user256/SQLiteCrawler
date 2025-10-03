@@ -23,7 +23,7 @@ Examples:
     p.add_argument("--js", action="store_true", 
                    help="Enable JavaScript rendering via Playwright (falls back to aiohttp if unavailable)")
     p.add_argument("--max-pages", type=int, default=None, 
-                   help="Maximum pages to process in this run (default: 500)")
+                   help="Maximum pages to process in this run (default: no limit)")
     p.add_argument("--max-depth", type=int, default=None, 
                    help="Maximum crawl depth (default: 3)")
     p.add_argument("--offsite", action="store_true", 
@@ -52,8 +52,8 @@ Examples:
                    help="Skip all sitemap discovery and processing (crawl only the provided URL)")
     p.add_argument("--allow-external", action="store_true",
                    help="Allow crawling external URLs (default: internal only)")
-    p.add_argument("--max-workers", type=int, default=4,
-                   help="Maximum number of worker threads for database operations (default: 4)")
+    p.add_argument("--max-workers", type=int, default=2,
+                   help="Maximum number of worker threads for database operations (default: 2)")
     
     # Output and logging
     p.add_argument("--verbose", "-v", action="store_true", 
