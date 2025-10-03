@@ -31,9 +31,16 @@
 * ✅ COMPLETED: All normalized tables populated and working efficiently
 * ✅ COMPLETED: Production-ready system handling enterprise-scale crawling
 
-## Data Recording Issues (REMAINING)
-* on indexability - some external urls don't seem to be recording source of discovery
-* robots_txt_allows always looks to be null in indexability
+## Data Recording Issues (COMPLETED)
+* ✅ on indexability - some external urls don't seem to be recording source of discovery - **RESOLVED**: External URLs ARE properly recording discovery source
+* ✅ robots_txt_allows always looks to be null in indexability - **RESOLVED**: Fixed robots.txt parsing and integration
+
+## Robots.txt Analysis (COMPLETED)
+* ✅ Fixed broken robots.txt parsing logic - was not properly parsing robots.txt content
+* ✅ Integrated robots.txt analysis into crawling process - now checks robots.txt before crawling URLs
+* ✅ Added robots.txt directives storage - stores disallow/allow rules in database
+* ✅ Fixed import path issues - corrected relative imports in db.py
+* ✅ Updated indexability calculation - now includes robots_txt_allows in overall indexability
 
 ## Code Cleanup Questions (REMAINING)
 * I'm unclear on the purpose of sitemap_validation ? is this something we need or can it be removed
@@ -44,6 +51,103 @@
 * pagination rel=prev/next
 
 ## feature
+* crawl from csv (restricted && seed)
 * allow rotating proxies
 * enable rotating headers
+* Custom extraction - CSS Path, XPath, regex data extraction
+* enable comparison between crawls
+   - including staging
+   - allow for url remapping
 
+## Screaming Frog Feature Gaps (HIGH PRIORITY)
+* Authenticated crawling - support basic/digest auth for staging sites
+* XML sitemap auditing - analyze sitemap quality and issues
+    - urls not in sitemap
+    - urls in crawl but not sitemaps
+    - non-indexable urls in sitemap
+* Canonical link analysis
+    - links to non-canonical url versions
+    - detect broken/redirected canonicals
+* Duplicate content detection - identify similar/duplicate pages
+* iframes and image checks
+* Hreflang implementation audit - international SEO checks
+    - more than one delcaration of a language
+    - mismatching reciprocity
+    - hreflang disagrees with html lang
+    - hreflang not in list of approved codes
+    - hreflang contains non-indexable/non-existant urls 
+* Redirect chain analysis - track and optimize redirects
+* Mixed content detection (HTTP resources on HTTPS pages)
+* Internal links graph analysis
+    - crawl depth
+    - hub pages
+    - PageRank/indegree calculation for link analysis
+
+
+## possible api integrations 
+* Mobile usability audit - check mobile-friendly elements
+* Accessibility audit - WCAG compliance checks
+* Page speed analysis - Core Web Vitals and performance metrics
+* Image optimization audit - alt text, file sizes, formats
+* JavaScript rendering analysis - detect JS-dependent content
+
+## Technical SEO Audit Features (MEDIUM PRIORITY)
+* Title tag analysis - length, uniqueness, boilerplate detection
+* Meta description analysis - length, uniqueness, duplicate detection
+* Header tag structure audit - H1-H6 hierarchy and optimization
+* Image alt text analysis - missing, duplicate, optimization quality
+* Breadcrumb navigation detection and analysis
+* Content length analysis - thin content detection, word count
+* Duplicate content detection - exact/near duplicates using content fingerprinting
+* Language declaration validation - html lang vs detected language
+* Anchor text quality analysis - generic anchors, empty anchors
+* Broken links detection - 4xx/5xx internal and external links
+* Nofollow usage analysis - page-level vs per-link nofollow
+* Faceted navigation detection - parameter explosions, session IDs
+* Pagination analysis - rel=prev/next consistency and loops
+
+## Performance & Technical Analysis
+* TTFB and total download time tracking
+* HTML weight analysis - oversized pages
+* Resource hints detection - preload/prefetch/dns-prefetch
+* Render blockers - synchronous scripts in head
+* Image optimization - file sizes, modern formats (WebP/AVIF)
+* Favicon and app icons validation
+* Viewport meta tag analysis for mobile
+* Tap target heuristics - link density analysis
+
+## Security & Protocol Analysis
+* HTTPS coverage - HTTP URLs, mixed content detection
+* Security headers - CSP, X-CTO, Referrer-Policy, X-Frame-Options
+* HSTS header validation
+* Content type and charset validation
+* OCSP stapling validation
+* Soft 404 error detection and reporting
+
+## Social & Metadata Analysis
+* Open Graph tags validation - title, description, image
+* Twitter Cards analysis
+* Social image validation - aspect ratio, size, reachability
+* Favored preview image analysis
+
+## Structured Data Analysis
+* Schema.org markup detection - JSON-LD, valid types
+* BreadcrumbList validation
+* Product/Review schema - required fields, ratings
+* Multiple conflicting entities detection
+
+
+## Domain Level Checks
+* SSL certificate validation and security headers
+* Camelcase canonicalization
+* DNS and server response analysis
+* Internal search pages indexing analysis
+* Tag/category archives duplicate risk
+* Parameter handling - UTM, session IDs
+* Internal search pages noindex/robots blocking
+
+## Missing Features from Comprehensive Checklist
+* Meta robots & X-Robots-Tag conflicts - header vs HTML conflicts
+* Canonical tag analysis - missing, multiple, non-200 canonicals, cross-domain
+* Content fingerprinting using shingle + MinHash/SimHash
+* Image role=presentation detection for decorative images

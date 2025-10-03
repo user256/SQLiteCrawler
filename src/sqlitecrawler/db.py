@@ -872,26 +872,42 @@ async def batch_write_content_with_url_resolution(content_data: List[Tuple[str, 
             html_meta_allows = not any('noindex' in d for d in content_info['html_meta_directives'])
             http_header_allows = not any('noindex' in d for d in content_info['http_header_directives'])
             
+            # Check robots.txt for this URL
+            from urllib.parse import urlparse
+            from .robots import is_url_crawlable
+            parsed_url = urlparse(url)
+            domain = parsed_url.netloc
+            robots_txt_allows = is_url_crawlable(url, "SQLiteCrawler/0.2")
+            
+            # Store robots.txt directives if any
+            robots_txt_directives = []
+            if not robots_txt_allows:
+                robots_txt_directives.append('disallow')
+            
             # Insert/update indexability summary
             await conn.execute(
                 """
-                INSERT INTO indexability(url_id, html_meta_allows, http_header_allows, 
-                                       html_meta_directives, http_header_directives, overall_indexable)
-                VALUES (?,?,?,?,?,?)
+                INSERT INTO indexability(url_id, robots_txt_allows, html_meta_allows, http_header_allows, 
+                                       robots_txt_directives, html_meta_directives, http_header_directives, overall_indexable)
+                VALUES (?,?,?,?,?,?,?,?)
                 ON CONFLICT(url_id) DO UPDATE SET
+                  robots_txt_allows=excluded.robots_txt_allows,
                   html_meta_allows=excluded.html_meta_allows,
                   http_header_allows=excluded.http_header_allows,
+                  robots_txt_directives=excluded.robots_txt_directives,
                   html_meta_directives=excluded.html_meta_directives,
                   http_header_directives=excluded.http_header_directives,
                   overall_indexable=excluded.overall_indexable
                 """,
                 (
                     url_id,
+                    robots_txt_allows,
                     html_meta_allows,
                     http_header_allows,
+                    json.dumps(robots_txt_directives, ensure_ascii=False),
                     json.dumps(content_info['html_meta_directives'], ensure_ascii=False),
                     json.dumps(content_info['http_header_directives'], ensure_ascii=False),
-                    html_meta_allows and http_header_allows  # Overall indexable
+                    robots_txt_allows and html_meta_allows and http_header_allows  # Overall indexable
                 )
             )
         

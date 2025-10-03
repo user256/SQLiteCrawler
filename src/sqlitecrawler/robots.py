@@ -78,15 +78,36 @@ async def parse_robots_txt(domain: str, user_agent: str = "SQLiteCrawler/0.2") -
     try:
         parser = urllib.robotparser.RobotFileParser()
         parser.set_url(f"https://{domain}/robots.txt")
-        parser.read()
         
-        # Parse the content manually since we have it
-        parser.modified()
+        # Initialize parser attributes
+        parser._user_agents = []
+        parser._entries = {}
+        
+        # Manually parse the content
+        current_user_agent = None
         for line in robots_content.splitlines():
             line = line.strip()
             if line and not line.startswith('#'):
-                parser.read()
-                break
+                # Parse each line manually
+                if ':' in line:
+                    key, value = line.split(':', 1)
+                    key = key.strip().lower()
+                    value = value.strip()
+                    
+                    if key == 'user-agent':
+                        current_user_agent = value
+                        if current_user_agent not in parser._user_agents:
+                            parser._user_agents.append(current_user_agent)
+                    elif key in ['disallow', 'allow'] and current_user_agent:
+                        if current_user_agent not in parser._entries:
+                            parser._entries[current_user_agent] = []
+                        parser._entries[current_user_agent].append((key, value))
+        
+        # If no user-agent was specified, use '*' as default
+        if not parser._user_agents:
+            parser._user_agents = ['*']
+            if '*' not in parser._entries:
+                parser._entries['*'] = []
         
         # Cache the parser
         robots_cache.set_robots_parser(domain, parser)
@@ -122,8 +143,11 @@ async def get_sitemaps_from_robots(domain: str, user_agent: str = "SQLiteCrawler
 
 def is_url_crawlable(url: str, user_agent: str = "SQLiteCrawler/0.2") -> bool:
     """Check if a URL is crawlable according to robots.txt."""
+    from urllib.parse import urlparse
+    
     parsed = urlparse(url)
     domain = parsed.netloc
+    path = parsed.path
     
     # Check cache first
     if robots_cache.is_failed(domain):
@@ -133,7 +157,44 @@ def is_url_crawlable(url: str, user_agent: str = "SQLiteCrawler/0.2") -> bool:
     if parser is None:
         return True  # Assume crawlable if no robots.txt
     
-    return parser.can_fetch(user_agent, url)
+    # Check if we have entries for this user agent or wildcard
+    entries = parser._entries.get(user_agent, []) + parser._entries.get('*', [])
+    
+    # If no entries, allow crawling
+    if not entries:
+        return True
+    
+    # Check each rule
+    for rule_type, rule_path in entries:
+        if rule_type == 'disallow':
+            # Check if the path matches the disallow pattern
+            if rule_path == '/':
+                return False  # Disallow everything
+            elif rule_path.endswith('*'):
+                # Wildcard pattern
+                pattern = rule_path[:-1]  # Remove the *
+                if path.startswith(pattern):
+                    return False
+            else:
+                # Exact match
+                if path.startswith(rule_path):
+                    return False
+        elif rule_type == 'allow':
+            # Allow rules override disallow rules
+            if rule_path == '/':
+                return True  # Allow everything
+            elif rule_path.endswith('*'):
+                # Wildcard pattern
+                pattern = rule_path[:-1]  # Remove the *
+                if path.startswith(pattern):
+                    return True
+            else:
+                # Exact match
+                if path.startswith(rule_path):
+                    return True
+    
+    # If no rules matched, allow by default
+    return True
 
 
 async def fetch_sitemap(url: str, user_agent: str = "SQLiteCrawler/0.2", verbose: bool = False) -> Optional[BeautifulSoup]:

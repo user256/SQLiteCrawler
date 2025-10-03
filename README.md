@@ -8,7 +8,8 @@ A high-performance, persistent web crawler built with Python and SQLite. Feature
 - **Redirect Tracking**: Complete redirect chain capture and storage
 - **Content Extraction**: Titles, meta descriptions, H1/H2 tags, robots directives, canonicals
 - **Sitemap Discovery**: Automatic XML sitemap parsing and URL discovery
-- **Robots.txt Compliance**: Respects crawling policies and discovers sitemaps
+- **Robots.txt Compliance**: Respects crawling policies, discovers sitemaps, and analyzes crawlability
+- **Link Analysis**: Internal/external link tracking with anchor text, XPath, and metadata
 - **Hreflang Support**: Extracts and normalizes hreflang data from sitemaps
 - **Database Normalization**: Efficient storage with URL IDs and compressed content
 - **Async Performance**: Concurrent requests with configurable limits
@@ -100,15 +101,17 @@ python main.py https://example.com/ --js
 ### Crawl Database (`*_crawl.db`)
 - **`urls`**: Normalized URL list with classifications (internal/external/social/network)
 - **`frontier`**: Persistent crawl queue with depth tracking
-- **`content`**: Extracted content (titles, meta descriptions, H1/H2, robots, canonicals)
+- **`content`**: Extracted content (titles, meta descriptions, H1/H2, robots, canonicals, link counts)
+- **`internal_links`**: Normalized internal link tracking with anchor text, XPath, and href metadata
 - **`redirects`**: Complete redirect chains with source/target URLs
+- **`indexability`**: Robots.txt, HTML meta, and HTTP header analysis for crawlability
 - **`hreflang_*`**: Normalized hreflang data from sitemaps, HTTP headers, and HTML
-- **`sitemap_validation`**: Sitemap URLs for future validation
+- **`sitemaps_listed`**: URLs discovered from sitemaps for validation
 
 ## Command Line Options
 
 ### Crawl Limits
-- `--max-pages N`: Maximum pages to crawl (default: 500)
+- `--max-pages N`: Maximum pages to crawl (default: no limit)
 - `--max-depth N`: Maximum crawl depth (default: 3)
 - `--offsite`: Allow crawling external URLs (default: internal only)
 
@@ -125,7 +128,7 @@ python main.py https://example.com/ --js
 - `--skip-sitemaps`: Skip all sitemap discovery and processing
 
 ### Performance
-- `--max-workers N`: Maximum worker threads for database operations (default: 4)
+- `--max-workers N`: Maximum worker threads for database operations (default: 2)
 - `--js`: Enable JavaScript rendering with Playwright
 
 ### Output
@@ -201,6 +204,21 @@ JOIN hreflang_languages h ON hs.hreflang_id = h.id
 JOIN urls href_urls ON hs.href_url_id = href_urls.id;
 ```
 
+### Check Robots.txt Analysis
+```sql
+SELECT u.url, i.robots_txt_allows, i.html_meta_allows, i.overall_indexable
+FROM indexability i
+JOIN urls u ON i.url_id = u.id
+WHERE i.robots_txt_allows = 0;  -- Find disallowed URLs
+```
+
+### Analyze Internal Links
+```sql
+SELECT source_url, target_url, anchor_text, xpath, href
+FROM internal_links_analysis
+WHERE source_url LIKE '%example.com%';
+```
+
 ## Performance Tips
 
 1. **Use appropriate concurrency**: Start with 10, increase based on server response
@@ -222,6 +240,15 @@ JOIN urls href_urls ON hs.href_url_id = href_urls.id;
 This project is licensed under the MIT License - see the LICENSE file for details.
 
 ## Changelog
+
+### v0.3
+- **Fixed robots.txt analysis**: Proper parsing and integration of robots.txt compliance
+- **Enhanced link analysis**: Internal/external link tracking with anchor text, XPath, and metadata
+- **Database normalization**: Fully normalized tables for anchor texts, xpaths, hrefs, canonical URLs, and robots directives
+- **Improved crawl limits**: Default to no page limit for complete site crawling
+- **Added sitemap tracking**: Track URLs discovered from sitemaps for validation
+- **Enhanced indexability analysis**: Comprehensive robots.txt, HTML meta, and HTTP header analysis
+- **Performance optimizations**: Reduced default concurrency and workers for better stability
 
 ### v0.2
 - Added redirect tracking with complete chain capture

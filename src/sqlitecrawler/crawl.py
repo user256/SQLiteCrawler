@@ -60,19 +60,20 @@ def normalize_headers(headers: dict) -> dict:
             normalized[key_lower] = str(value).strip()
     return normalized
 
-def should_crawl_url(url: str, base_domain: str, allow_external: bool, is_from_sitemap: bool = False) -> bool:
+def should_crawl_url(url: str, base_domain: str, allow_external: bool, is_from_sitemap: bool = False, user_agent: str = "SQLiteCrawler/0.2") -> bool:
     """Determine if a URL should be crawled based on classification and settings."""
     from .db import classify_url
+    from .robots import is_url_crawlable
     
     classification = classify_url(url, base_domain, is_from_sitemap)
     
-    # Always crawl internal URLs
+    # Always crawl internal URLs (but check robots.txt)
     if classification == 'internal':
-        return True
+        return is_url_crawlable(url, user_agent)
     
-    # Always crawl network URLs (from sitemaps)
+    # Always crawl network URLs (from sitemaps, but check robots.txt)
     if classification == 'network':
-        return True
+        return is_url_crawlable(url, user_agent)
     
     # Never crawl social media URLs
     if classification == 'social':
@@ -320,7 +321,7 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
                         child_norm = normalize_url_for_storage(child)
                         
                         # Check if URL should be crawled based on classification
-                        if should_crawl_url(child_norm, base_domain, allow_external, is_from_sitemap=False):
+                        if should_crawl_url(child_norm, base_domain, allow_external, is_from_sitemap=False, user_agent=http_config.user_agent):
                             children_to_enqueue.append((child_norm, depth + 1, original_norm, base_domain))
                             print(f"  -> Enqueued: {child_norm}")
                         else:
