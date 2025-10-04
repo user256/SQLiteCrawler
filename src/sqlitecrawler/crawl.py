@@ -132,15 +132,15 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
         # Parse robots.txt for sitemap discovery (unless skipped)
         if not http_config.skip_robots_sitemaps:
             print(f"Parsing robots.txt for {base_domain}...")
-            await parse_robots_txt(base_domain, http_config.user_agent)
+            await parse_robots_txt(base_domain, http_config.user_agent, http_config)
         
         print(f"Discovering sitemaps for {base_domain}...")
-        sitemap_urls = await discover_sitemaps_from_domain(base_domain, http_config.user_agent, http_config.skip_robots_sitemaps)
+        sitemap_urls = await discover_sitemaps_from_domain(base_domain, http_config.user_agent, http_config.skip_robots_sitemaps, http_config)
         
         # Crawl sitemaps to discover URLs
         if sitemap_urls:
             print("Crawling sitemaps to discover URLs...")
-            sitemap_urls_dict, url_to_sitemap_mapping = await crawl_sitemaps_recursive(sitemap_urls, http_config.user_agent, verbose=verbose)
+            sitemap_urls_dict, url_to_sitemap_mapping = await crawl_sitemaps_recursive(sitemap_urls, http_config.user_agent, verbose=verbose, http_config=http_config)
         else:
             sitemap_urls_dict = {}
             url_to_sitemap_mapping = {}

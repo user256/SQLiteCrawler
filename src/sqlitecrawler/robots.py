@@ -37,13 +37,21 @@ class RobotsCache:
 robots_cache = RobotsCache()
 
 
-async def fetch_robots_txt(domain: str, user_agent: str = "SQLiteCrawler/0.2") -> Optional[str]:
+async def fetch_robots_txt(domain: str, user_agent: str = "SQLiteCrawler/0.2", http_config=None) -> Optional[str]:
     """Fetch robots.txt content for a domain."""
     robots_url = f"https://{domain}/robots.txt"
     
+    # Prepare authentication if needed
+    auth = None
+    if http_config and http_config.auth:
+        from .fetch import _should_use_auth, _create_auth
+        if _should_use_auth(robots_url, http_config.auth):
+            auth = _create_auth(http_config.auth)
+    
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(robots_url, headers={'User-Agent': user_agent}, timeout=10) as response:
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(robots_url, headers={'User-Agent': user_agent}, auth=auth) as response:
                 if response.status == 200:
                     return await response.text()
                 elif response.status >= 500:
@@ -57,7 +65,7 @@ async def fetch_robots_txt(domain: str, user_agent: str = "SQLiteCrawler/0.2") -
         return None
 
 
-async def parse_robots_txt(domain: str, user_agent: str = "SQLiteCrawler/0.2") -> Optional[urllib.robotparser.RobotFileParser]:
+async def parse_robots_txt(domain: str, user_agent: str = "SQLiteCrawler/0.2", http_config=None) -> Optional[urllib.robotparser.RobotFileParser]:
     """Parse robots.txt and return RobotFileParser object."""
     
     # Check cache first
@@ -69,7 +77,7 @@ async def parse_robots_txt(domain: str, user_agent: str = "SQLiteCrawler/0.2") -
         return cached_parser
     
     # Fetch robots.txt
-    robots_content = await fetch_robots_txt(domain, user_agent)
+    robots_content = await fetch_robots_txt(domain, user_agent, http_config)
     if robots_content is None:
         robots_cache.mark_failed(domain)
         return None
@@ -133,9 +141,9 @@ def extract_sitemaps_from_robots(robots_content: str) -> List[str]:
     return sitemaps
 
 
-async def get_sitemaps_from_robots(domain: str, user_agent: str = "SQLiteCrawler/0.2") -> List[str]:
+async def get_sitemaps_from_robots(domain: str, user_agent: str = "SQLiteCrawler/0.2", http_config=None) -> List[str]:
     """Get sitemap URLs from robots.txt for a domain."""
-    robots_content = await fetch_robots_txt(domain, user_agent)
+    robots_content = await fetch_robots_txt(domain, user_agent, http_config)
     if robots_content:
         return extract_sitemaps_from_robots(robots_content)
     return []
@@ -197,14 +205,22 @@ def is_url_crawlable(url: str, user_agent: str = "SQLiteCrawler/0.2") -> bool:
     return True
 
 
-async def fetch_sitemap(url: str, user_agent: str = "SQLiteCrawler/0.2", verbose: bool = False) -> Optional[BeautifulSoup]:
+async def fetch_sitemap(url: str, user_agent: str = "SQLiteCrawler/0.2", verbose: bool = False, http_config=None) -> Optional[BeautifulSoup]:
     """Fetch and parse a sitemap XML."""
     if verbose:
         print(f"[sitemap] Fetching: {url}")
     
+    # Prepare authentication if needed
+    auth = None
+    if http_config and http_config.auth:
+        from .fetch import _should_use_auth, _create_auth
+        if _should_use_auth(url, http_config.auth):
+            auth = _create_auth(http_config.auth)
+    
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers={'User-Agent': user_agent}, timeout=30) as response:
+        timeout = aiohttp.ClientTimeout(total=30)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(url, headers={'User-Agent': user_agent}, auth=auth) as response:
                 if verbose:
                     print(f"[sitemap] Response: {response.status} for {url}")
                 
@@ -290,7 +306,7 @@ def process_sitemap(sitemap_soup: BeautifulSoup, verbose: bool = False) -> tuple
     return [], {}
 
 
-async def crawl_sitemaps_recursive(sitemap_urls: List[str], user_agent: str = "SQLiteCrawler/0.2", verbose: bool = False) -> tuple[Dict[str, Dict], Dict[str, str]]:
+async def crawl_sitemaps_recursive(sitemap_urls: List[str], user_agent: str = "SQLiteCrawler/0.2", verbose: bool = False, http_config=None) -> tuple[Dict[str, Dict], Dict[str, str]]:
     """Recursively crawl sitemap URLs and extract all URLs.
     Returns (urls_dict, url_to_sitemap_mapping) where url_to_sitemap_mapping maps each URL to its source sitemap.
     """
@@ -308,7 +324,7 @@ async def crawl_sitemaps_recursive(sitemap_urls: List[str], user_agent: str = "S
         
         print(f"[sitemap] Processing: {current_sitemap}")
         
-        sitemap_soup = await fetch_sitemap(current_sitemap, user_agent, verbose)
+        sitemap_soup = await fetch_sitemap(current_sitemap, user_agent, verbose, http_config)
         if sitemap_soup:
             nested_indexes, new_urls = process_sitemap(sitemap_soup, verbose)
             
@@ -331,13 +347,13 @@ async def crawl_sitemaps_recursive(sitemap_urls: List[str], user_agent: str = "S
     return all_urls, url_to_sitemap
 
 
-async def discover_sitemaps_from_domain(domain: str, user_agent: str = "SQLiteCrawler/0.2", skip_robots: bool = False) -> List[str]:
+async def discover_sitemaps_from_domain(domain: str, user_agent: str = "SQLiteCrawler/0.2", skip_robots: bool = False, http_config=None) -> List[str]:
     """Discover all sitemaps for a domain starting from robots.txt."""
     initial_sitemaps = []
     
     if not skip_robots:
         # Get sitemaps from robots.txt
-        initial_sitemaps = await get_sitemaps_from_robots(domain, user_agent)
+        initial_sitemaps = await get_sitemaps_from_robots(domain, user_agent, http_config)
     
     if not initial_sitemaps:
         # Try common sitemap locations
@@ -349,7 +365,7 @@ async def discover_sitemaps_from_domain(domain: str, user_agent: str = "SQLiteCr
         
         # Test which ones exist
         for sitemap_url in common_sitemaps:
-            sitemap_soup = await fetch_sitemap(sitemap_url, user_agent)
+            sitemap_soup = await fetch_sitemap(sitemap_url, user_agent, False, http_config)
             if sitemap_soup:
                 initial_sitemaps.append(sitemap_url)
                 break
