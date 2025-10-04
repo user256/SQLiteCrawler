@@ -114,4 +114,4 @@
 * Retry functionality with exponential backoff
 * Sitemap tracking and statistics
 * Code cleanup and optimization
-* **Authenticated crawling** - Basic/Digest HTTP authentication support
+* **Authenticated crawling** - Basic/Digest HTTP authentication support (tested on staging site)
