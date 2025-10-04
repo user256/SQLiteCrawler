@@ -1,172 +1,117 @@
 # SQLiteCrawler TODO List
 
-## ✅ COMPLETED - Database Efficiency Improvements
-* ✅ COMPLETED: canonicals on canonical_urls now stored as IDs in canonical_url_strings table
-* ✅ COMPLETED: robots directives now stored as IDs in robots_directive_strings table
-* ✅ COMPLETED: anchor texts normalized in anchor_texts table (3,791 unique texts)
-* ✅ COMPLETED: xpaths normalized in xpaths table (461 unique xpaths)
-* ✅ COMPLETED: hrefs normalized in hrefs table (1,326 unique hrefs)
-* ✅ COMPLETED: internal_links table fully normalized with zero string duplication
+## 🚀 HIGH PRIORITY - Core Features
 
-## ✅ COMPLETED - Link Analysis & Tracking
-* ✅ COMPLETED: Internal links table with anchor text and xpath tracking
-* ✅ COMPLETED: Link counts per page (internal/external, unique and total)
-* ✅ COMPLETED: URL component parsing (fragments, parameters, absolute/relative)
-* ✅ COMPLETED: 14,048 internal links successfully tracked with full metadata
+### Asset Crawling & Analysis
+* **Fetch assets** - crawl js/image/iframe/fonts and other linked assets
+* **Caching analysis** - report on caching / assets with no cache / cache busting
+* **Performance hints** - evaluate preconnect/preload/prefetch for speed improvements
 
-## ✅ COMPLETED - Crawl Management
-* ✅ COMPLETED: Frontier logic bug fixed - sitemap URLs properly queued
-* ✅ COMPLETED: Graceful shutdown with pause/resume functionality
-* ✅ COMPLETED: Unlimited crawling by default (no artificial page limits)
-* ✅ COMPLETED: Reduced concurrency for system stability (5 max, 2 workers)
+### Advanced Crawling Features
+* **CSV crawl support** - crawl from csv (restricted && seed)
+* **Proxy rotation** - allow rotating proxies
+* **Header rotation** - enable rotating headers
+* **Custom extraction** - CSS Path, XPath, regex data extraction
+* **Crawl comparison** - enable comparison between crawls (including staging, URL remapping)
 
-## ✅ COMPLETED - Database Schema & Views
-* ✅ COMPLETED: page_analysis view now filters to internal/network URLs only
-* ✅ COMPLETED: sitemaps_listed table created for sitemap URL tracking
-* ✅ COMPLETED: crawl_depth, inlinks_count, inlinks_unique_count fields added
-* ✅ COMPLETED: internal_links_analysis view for comprehensive link analysis
+### Authentication & Security
+* ✅ **Authenticated crawling** - support basic/digest auth for staging sites
+* **Security headers** - CSP, X-CTO, Referrer-Policy, X-Frame-Options
+* **HTTPS analysis** - HTTP URLs, mixed content detection
+* **HSTS validation** - header validation and security analysis
 
-## ✅ COMPLETED - Full Site Crawl
-* ✅ COMPLETED: Successfully crawled entire whiskipedia.com (660 pages, 1,370 total URLs)
-* ✅ COMPLETED: All normalized tables populated and working efficiently
-* ✅ COMPLETED: Production-ready system handling enterprise-scale crawling
+## 📊 MEDIUM PRIORITY - SEO Analysis
 
-## Data Recording Issues (COMPLETED)
-* ✅ on indexability - some external urls don't seem to be recording source of discovery - **RESOLVED**: External URLs ARE properly recording discovery source
-* ✅ robots_txt_allows always looks to be null in indexability - **RESOLVED**: Fixed robots.txt parsing and integration
+### Content Analysis
+* **Schema.org extraction** - markdown/json-ld parsing
+* **OpenGraph analysis** - social media metadata
+* **Pagination detection** - rel=prev/next analysis
+* **Title tag analysis** - length, uniqueness, boilerplate detection
+* **Meta description analysis** - length, uniqueness, duplicate detection
+* **Header structure audit** - H1-H6 hierarchy and optimization
+* **Content analysis** - thin content detection, word count
+* **Language validation** - html lang vs detected language
 
-## Robots.txt Analysis (COMPLETED)
-* ✅ Fixed broken robots.txt parsing logic - was not properly parsing robots.txt content
-* ✅ Integrated robots.txt analysis into crawling process - now checks robots.txt before crawling URLs
-* ✅ Added robots.txt directives storage - stores disallow/allow rules in database
-* ✅ Fixed import path issues - corrected relative imports in db.py
-* ✅ Updated indexability calculation - now includes robots_txt_allows in overall indexability
+### Link & Navigation Analysis
+* **Anchor text quality** - generic anchors, empty anchors
+* **Broken links detection** - 4xx/5xx internal and external links
+* **Nofollow analysis** - page-level vs per-link nofollow
+* **Faceted navigation** - parameter explosions, session IDs
+* **Breadcrumb detection** - navigation analysis
+* **Internal links graph** - crawl depth, hub pages, PageRank calculation
 
-## Retry functionality ✅ COMPLETED
-* ✅ Implemented comprehensive retry functionality for failed URL requests
-* ✅ Smart retry logic: retries 0, 408, 420, 423, 429, 451, and all 5xx status codes
-* ✅ Exponential backoff with configurable delay and backoff factor
-* ✅ Database tracking of failed URLs with retry counts and timestamps
-* ✅ Automatic retry scheduling - URLs are re-queued when ready
-* ✅ Enhanced failure reason reporting with descriptive messages
-* ✅ Comprehensive retry statistics reporting by status code and attempt count
-* ✅ Command line configuration: --max-retries, --retry-delay, --retry-backoff
-* ✅ Graceful handling of permanent failures (404, etc.) - no unnecessary retries
+### Technical SEO
+* **XML sitemap auditing** - analyze sitemap quality and issues
+  - URLs not in sitemap
+  - URLs in crawl but not sitemaps
+  - Non-indexable URLs in sitemap
+* **Canonical analysis** - links to non-canonical versions, broken/redirected canonicals
+* **Duplicate content** - identify similar/duplicate pages using content fingerprinting
+* **Hreflang audit** - international SEO checks
+  - Multiple language declarations
+  - Mismatching reciprocity
+  - Hreflang vs html lang conflicts
+  - Invalid language codes
+  - Non-indexable URLs in hreflang
+* **Redirect analysis** - track and optimize redirect chains
 
-## fetch assets
-* options to also crawl any js/image/iframe/fonts and other linked assets
-* report on caching / assets with no cache / cache busting
+## 🔍 LOW PRIORITY - Advanced Analysis
 
-## evaluate preconnect/preload/prefetch
-look for potential speed improvements
+### Performance & Technical
+* **TTFB tracking** - total download time analysis
+* **HTML weight** - oversized pages detection
+* **Resource hints** - preload/prefetch/dns-prefetch analysis
+* **Render blockers** - synchronous scripts in head
+* **Image optimization** - file sizes, modern formats (WebP/AVIF)
+* **Favicon validation** - app icons validation
+* **Viewport analysis** - mobile meta tag analysis
+* **Tap targets** - link density analysis
 
-## Code Cleanup Questions (REMAINING)
-* we have a sitmap table, does it list sitemaps with count of urls found in each - does urls list refer to an index of sitemaps its found in? if not we'd want this
-* I'm unclear on the purpose of sitemap_validation ? is this something we need or can it be removed
+### Social & Metadata
+* **OpenGraph validation** - title, description, image
+* **Twitter Cards** - analysis and validation
+* **Social images** - aspect ratio, size, reachability
+* **Preview images** - favored preview image analysis
 
-## extraction
-* schema.org markdown/json-ld
-* opengraph
-* pagination rel=prev/next
+### Structured Data
+* **Schema.org detection** - JSON-LD, valid types
+* **BreadcrumbList** - validation
+* **Product/Review schema** - required fields, ratings
+* **Conflicting entities** - multiple entities detection
 
-## feature
-* crawl from csv (restricted && seed)
-* allow rotating proxies
-* enable rotating headers
-* Custom extraction - CSS Path, XPath, regex data extraction
-* enable comparison between crawls
-   - including staging
-   - allow for url remapping
+### Domain & Server Analysis
+* **SSL certificate** - validation and security headers
+* **DNS analysis** - server response analysis
+* **Canonicalization** - camelcase canonicalization
+* **Search pages** - internal search pages indexing analysis
+* **Archive pages** - tag/category archives duplicate risk
+* **Parameter handling** - UTM, session IDs
+* **Search blocking** - internal search pages noindex/robots blocking
 
-## Screaming Frog Feature Gaps (HIGH PRIORITY)
-* Authenticated crawling - support basic/digest auth for staging sites
-* XML sitemap auditing - analyze sitemap quality and issues
-    - urls not in sitemap
-    - urls in crawl but not sitemaps
-    - non-indexable urls in sitemap
-* Canonical link analysis
-    - links to non-canonical url versions
-    - detect broken/redirected canonicals
-* Duplicate content detection - identify similar/duplicate pages
-* iframes and image checks
-* Hreflang implementation audit - international SEO checks
-    - more than one delcaration of a language
-    - mismatching reciprocity
-    - hreflang disagrees with html lang
-    - hreflang not in list of approved codes
-    - hreflang contains non-indexable/non-existant urls 
-* Redirect chain analysis - track and optimize redirects
-* Mixed content detection (HTTP resources on HTTPS pages)
-* Internal links graph analysis
-    - crawl depth
-    - hub pages
-    - PageRank/indegree calculation for link analysis
+### Advanced Features
+* **Content fingerprinting** - using shingle + MinHash/SimHash
+* **Image roles** - role=presentation detection for decorative images
+* **Meta robots conflicts** - header vs HTML conflicts
+* **Canonical conflicts** - missing, multiple, non-200 canonicals, cross-domain
+* **Content type validation** - charset validation
+* **OCSP stapling** - validation
+* **Soft 404 detection** - error detection and reporting
 
+## 🎯 API Integrations (Future)
+* **Mobile usability** - check mobile-friendly elements
+* **Accessibility audit** - WCAG compliance checks
+* **Page speed** - Core Web Vitals and performance metrics
+* **Image optimization** - alt text, file sizes, formats
+* **JavaScript rendering** - detect JS-dependent content
 
-## possible api integrations 
-* Mobile usability audit - check mobile-friendly elements
-* Accessibility audit - WCAG compliance checks
-* Page speed analysis - Core Web Vitals and performance metrics
-* Image optimization audit - alt text, file sizes, formats
-* JavaScript rendering analysis - detect JS-dependent content
+---
 
-## Technical SEO Audit Features (MEDIUM PRIORITY)
-* Title tag analysis - length, uniqueness, boilerplate detection
-* Meta description analysis - length, uniqueness, duplicate detection
-* Header tag structure audit - H1-H6 hierarchy and optimization
-* Image alt text analysis - missing, duplicate, optimization quality
-* Breadcrumb navigation detection and analysis
-* Content length analysis - thin content detection, word count
-* Duplicate content detection - exact/near duplicates using content fingerprinting
-* Language declaration validation - html lang vs detected language
-* Anchor text quality analysis - generic anchors, empty anchors
-* Broken links detection - 4xx/5xx internal and external links
-* Nofollow usage analysis - page-level vs per-link nofollow
-* Faceted navigation detection - parameter explosions, session IDs
-* Pagination analysis - rel=prev/next consistency and loops
-
-## Performance & Technical Analysis
-* TTFB and total download time tracking
-* HTML weight analysis - oversized pages
-* Resource hints detection - preload/prefetch/dns-prefetch
-* Render blockers - synchronous scripts in head
-* Image optimization - file sizes, modern formats (WebP/AVIF)
-* Favicon and app icons validation
-* Viewport meta tag analysis for mobile
-* Tap target heuristics - link density analysis
-
-## Security & Protocol Analysis
-* HTTPS coverage - HTTP URLs, mixed content detection
-* Security headers - CSP, X-CTO, Referrer-Policy, X-Frame-Options
-* HSTS header validation
-* Content type and charset validation
-* OCSP stapling validation
-* Soft 404 error detection and reporting
-
-## Social & Metadata Analysis
-* Open Graph tags validation - title, description, image
-* Twitter Cards analysis
-* Social image validation - aspect ratio, size, reachability
-* Favored preview image analysis
-
-## Structured Data Analysis
-* Schema.org markup detection - JSON-LD, valid types
-* BreadcrumbList validation
-* Product/Review schema - required fields, ratings
-* Multiple conflicting entities detection
-
-
-## Domain Level Checks
-* SSL certificate validation and security headers
-* Camelcase canonicalization
-* DNS and server response analysis
-* Internal search pages indexing analysis
-* Tag/category archives duplicate risk
-* Parameter handling - UTM, session IDs
-* Internal search pages noindex/robots blocking
-
-## Missing Features from Comprehensive Checklist
-* Meta robots & X-Robots-Tag conflicts - header vs HTML conflicts
-* Canonical tag analysis - missing, multiple, non-200 canonicals, cross-domain
-* Content fingerprinting using shingle + MinHash/SimHash
-* Image role=presentation detection for decorative images
+## ✅ COMPLETED FEATURES
+* Database normalization (canonicals, robots directives, anchor texts, xpaths, hrefs)
+* Link analysis & tracking with full metadata
+* Crawl management with pause/resume functionality
+* Robots.txt analysis and compliance checking
+* Retry functionality with exponential backoff
+* Sitemap tracking and statistics
+* Code cleanup and optimization
+* **Authenticated crawling** - Basic/Digest HTTP authentication support

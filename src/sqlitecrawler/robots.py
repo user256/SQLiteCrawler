@@ -290,10 +290,13 @@ def process_sitemap(sitemap_soup: BeautifulSoup, verbose: bool = False) -> tuple
     return [], {}
 
 
-async def crawl_sitemaps_recursive(sitemap_urls: List[str], user_agent: str = "SQLiteCrawler/0.2", verbose: bool = False) -> Dict[str, Dict]:
-    """Recursively crawl sitemap URLs and extract all URLs."""
+async def crawl_sitemaps_recursive(sitemap_urls: List[str], user_agent: str = "SQLiteCrawler/0.2", verbose: bool = False) -> tuple[Dict[str, Dict], Dict[str, str]]:
+    """Recursively crawl sitemap URLs and extract all URLs.
+    Returns (urls_dict, url_to_sitemap_mapping) where url_to_sitemap_mapping maps each URL to its source sitemap.
+    """
     crawled = set()
     all_urls = {}
+    url_to_sitemap = {}  # Maps URL to the sitemap it was found in
     
     while sitemap_urls:
         current_sitemap = sitemap_urls.pop(0)  # Use pop(0) for FIFO
@@ -309,8 +312,10 @@ async def crawl_sitemaps_recursive(sitemap_urls: List[str], user_agent: str = "S
         if sitemap_soup:
             nested_indexes, new_urls = process_sitemap(sitemap_soup, verbose)
             
-            # Add new URLs
-            all_urls.update(new_urls)
+            # Add new URLs and track which sitemap they came from
+            for url in new_urls.keys():
+                all_urls[url] = new_urls[url]
+                url_to_sitemap[url] = current_sitemap
             
             # Add nested sitemap indexes to queue
             if nested_indexes:
@@ -323,7 +328,7 @@ async def crawl_sitemaps_recursive(sitemap_urls: List[str], user_agent: str = "S
         crawled.add(current_sitemap)
         print(f"[sitemap] Total URLs discovered so far: {len(all_urls)}")
     
-    return all_urls
+    return all_urls, url_to_sitemap
 
 
 async def discover_sitemaps_from_domain(domain: str, user_agent: str = "SQLiteCrawler/0.2", skip_robots: bool = False) -> List[str]:

@@ -50,6 +50,9 @@ python main.py https://example.com/ --allow-external
 
 # Resume a previous crawl (no reset needed)
 python main.py https://example.com/ --max-pages 200
+
+# Crawl with HTTP authentication (for staging sites)
+python main.py https://staging.example.com/ --auth-username myuser --auth-password mypass
 ```
 
 ### Single URL Crawling
@@ -122,6 +125,12 @@ python main.py https://example.com/ --js
 - `--concurrency N`: Maximum concurrent requests (default: 10)
 - `--delay N`: Delay between requests in seconds (default: 0.1)
 
+### Authentication
+- `--auth-username STRING`: Username for HTTP authentication (basic/digest)
+- `--auth-password STRING`: Password for HTTP authentication (basic/digest)
+- `--auth-type {basic,digest}`: Authentication type (default: basic)
+- `--auth-domain STRING`: Restrict authentication to specific domain (optional)
+
 ### Robots and Sitemaps
 - `--ignore-robots`: Ignore robots.txt for crawlability (still use for sitemaps)
 - `--skip-robots-sitemaps`: Skip robots.txt sitemap discovery
@@ -154,6 +163,15 @@ python main.py https://example.com/old-page --skip-sitemaps --max-pages 1 --verb
 ```bash
 # Discover and validate sitemap URLs
 python main.py https://example.com/ --max-pages 100 --verbose
+```
+
+### Staging Site Crawling
+```bash
+# Crawl staging site with HTTP authentication
+python main.py https://staging.example.com/ --auth-username deploy --auth-password secret123 --verbose
+
+# Crawl with domain-restricted authentication
+python main.py https://staging.example.com/ --auth-username user --auth-password pass --auth-domain staging.example.com
 ```
 
 ### Performance Testing

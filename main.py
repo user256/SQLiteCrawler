@@ -63,6 +63,16 @@ Examples:
     p.add_argument("--retry-backoff", type=float, default=2.0,
                    help="Backoff factor for retry delays (default: 2.0)")
     
+    # Authentication configuration
+    p.add_argument("--auth-username", type=str, default="",
+                   help="Username for HTTP authentication (basic/digest)")
+    p.add_argument("--auth-password", type=str, default="",
+                   help="Password for HTTP authentication (basic/digest)")
+    p.add_argument("--auth-type", type=str, choices=["basic", "digest"], default="basic",
+                   help="Authentication type: basic or digest (default: basic)")
+    p.add_argument("--auth-domain", type=str, default="",
+                   help="Restrict authentication to specific domain (optional)")
+    
     # Output and logging
     p.add_argument("--verbose", "-v", action="store_true", 
                    help="Enable verbose output")
@@ -84,6 +94,18 @@ Examples:
     
     # Create HTTP configuration
     user_agent = args.custom_ua if args.custom_ua else get_user_agent(args.user_agent)
+    
+    # Create authentication configuration if provided
+    auth_config = None
+    if args.auth_username and args.auth_password:
+        from src.sqlitecrawler.config import AuthConfig
+        auth_config = AuthConfig(
+            username=args.auth_username,
+            password=args.auth_password,
+            auth_type=args.auth_type,
+            domain=args.auth_domain
+        )
+    
     http_config = HttpConfig(
         user_agent=user_agent,
         timeout=args.timeout if args.timeout is not None else HttpConfig().timeout,
@@ -96,6 +118,7 @@ Examples:
         max_retries=args.max_retries,
         retry_delay=args.retry_delay,
         retry_backoff_factor=args.retry_backoff,
+        auth=auth_config,
     )
     
     # Print configuration if verbose
@@ -119,6 +142,12 @@ Examples:
         print(f"  Skip sitemaps: {http_config.skip_sitemaps}")
         print(f"  Allow external URLs: {args.allow_external}")
         print(f"  Max workers: {args.max_workers}")
+        if auth_config:
+            print(f"  Authentication: {auth_config.auth_type} (user: {auth_config.username})")
+            if auth_config.domain:
+                print(f"  Auth Domain: {auth_config.domain}")
+        else:
+            print(f"  Authentication: None")
         print()
 
     asyncio.run(crawl(args.start, use_js=args.js, limits=limits, reset_frontier=args.reset_frontier, http_config=http_config, allow_external=args.allow_external, max_workers=args.max_workers, verbose=args.verbose))

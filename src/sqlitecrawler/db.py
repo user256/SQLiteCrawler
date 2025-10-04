@@ -371,24 +371,8 @@ CREATE TABLE IF NOT EXISTS indexability (
   FOREIGN KEY (url_id) REFERENCES urls (id)
 );
 
--- Sitemap validation table
-CREATE TABLE IF NOT EXISTS sitemap_validation (
-  url_id INTEGER PRIMARY KEY,
-  sitemap_url TEXT NOT NULL,  -- Which sitemap this URL came from
-  sitemap_discovered_at INTEGER NOT NULL,  -- When it was discovered from sitemap
-  http_status INTEGER,  -- HTTP status when crawled
-  is_accessible BOOLEAN,  -- Whether URL returns 200
-  is_indexable BOOLEAN,  -- Whether URL is indexable based on robots/canonical
-  validation_errors TEXT,  -- JSON array of validation errors
-  last_validated INTEGER,  -- When it was last validated
-  FOREIGN KEY (url_id) REFERENCES urls (id)
-);
 CREATE INDEX IF NOT EXISTS idx_indexability_url_id ON indexability(url_id);
 CREATE INDEX IF NOT EXISTS idx_indexability_overall ON indexability(overall_indexable);
-CREATE INDEX IF NOT EXISTS idx_sitemap_validation_url_id ON sitemap_validation(url_id);
-CREATE INDEX IF NOT EXISTS idx_sitemap_validation_sitemap ON sitemap_validation(sitemap_url);
-CREATE INDEX IF NOT EXISTS idx_sitemap_validation_accessible ON sitemap_validation(is_accessible);
-CREATE INDEX IF NOT EXISTS idx_sitemap_validation_indexable ON sitemap_validation(is_indexable);
 
 -- Redirects table to track redirect chains
 CREATE TABLE IF NOT EXISTS redirects (
@@ -422,7 +406,7 @@ CREATE TABLE IF NOT EXISTS frontier (
 CREATE INDEX IF NOT EXISTS idx_frontier_status ON frontier(status);
 CREATE INDEX IF NOT EXISTS idx_frontier_url_id ON frontier(url_id);
 
--- Sitemap tracking table
+-- Sitemap tracking table - tracks URLs found in sitemaps
 CREATE TABLE IF NOT EXISTS sitemaps_listed (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   url_id INTEGER NOT NULL,
@@ -433,6 +417,7 @@ CREATE TABLE IF NOT EXISTS sitemaps_listed (
 );
 CREATE INDEX IF NOT EXISTS idx_sitemaps_listed_url_id ON sitemaps_listed(url_id);
 CREATE INDEX IF NOT EXISTS idx_sitemaps_listed_sitemap ON sitemaps_listed(sitemap_url);
+CREATE INDEX IF NOT EXISTS idx_sitemaps_listed_discovered ON sitemaps_listed(discovered_at);
 
 -- Failed URLs retry tracking table
 CREATE TABLE IF NOT EXISTS failed_urls (
@@ -516,6 +501,27 @@ LEFT JOIN urls u2 ON il.target_url_id = u2.id
 LEFT JOIN anchor_texts at ON il.anchor_text_id = at.id
 LEFT JOIN xpaths x ON il.xpath_id = x.id
 LEFT JOIN urls href_urls ON il.href_url_id = href_urls.id;
+
+-- View for sitemap statistics
+CREATE VIEW IF NOT EXISTS sitemap_statistics AS
+SELECT 
+    sl.sitemap_url,
+    COUNT(*) as total_urls,
+    COUNT(DISTINCT sl.url_id) as unique_urls,
+    MIN(sl.discovered_at) as first_discovered,
+    MAX(sl.discovered_at) as last_discovered,
+    -- Count URLs by status
+    COUNT(CASE WHEN f.status = 'done' THEN 1 END) as crawled_urls,
+    COUNT(CASE WHEN f.status = 'queued' THEN 1 END) as queued_urls,
+    COUNT(CASE WHEN f.status IS NULL THEN 1 END) as not_in_frontier,
+    -- Count URLs by HTTP status
+    COUNT(CASE WHEN p.status = 200 THEN 1 END) as successful_urls,
+    COUNT(CASE WHEN p.status >= 400 THEN 1 END) as error_urls
+FROM sitemaps_listed sl
+LEFT JOIN frontier f ON sl.url_id = f.url_id
+LEFT JOIN pages p ON sl.url_id = p.url_id
+GROUP BY sl.sitemap_url
+ORDER BY total_urls DESC;
 """
 
 async def init_pages_db(db_path: str = PAGES_DB_PATH):
@@ -1331,14 +1337,14 @@ async def batch_write_hreflang_sitemap_data(hreflang_data: List[Tuple[str, str, 
         
         await conn.commit()
 
-async def batch_write_sitemap_validation(sitemap_urls: List[Tuple[str, str]], crawl_db_path: str):
-    """Write sitemap validation records for discovered URLs."""
+async def batch_write_sitemaps_listed(sitemap_urls: List[Tuple[str, str, int]], crawl_db_path: str):
+    """Write sitemap tracking records for discovered URLs."""
     if not sitemap_urls:
         return
     
     async with aiosqlite.connect(crawl_db_path) as conn:
         now = int(time.time())
-        for url, sitemap_url in sitemap_urls:
+        for url, sitemap_url, position in sitemap_urls:
             # Get URL ID
             cursor = await conn.execute("SELECT id FROM urls WHERE url = ?", (url,))
             row = await cursor.fetchone()
@@ -1347,13 +1353,13 @@ async def batch_write_sitemap_validation(sitemap_urls: List[Tuple[str, str]], cr
             
             url_id = row[0]
             
-            # Insert sitemap validation record
+            # Insert sitemap tracking record
             await conn.execute(
                 """
-                INSERT OR IGNORE INTO sitemap_validation(url_id, sitemap_url, sitemap_discovered_at)
-                VALUES (?,?,?)
+                INSERT OR IGNORE INTO sitemaps_listed(url_id, sitemap_url, sitemap_position, discovered_at)
+                VALUES (?,?,?,?)
                 """,
-                (url_id, sitemap_url, now)
+                (url_id, sitemap_url, position, now)
             )
         
         await conn.commit()

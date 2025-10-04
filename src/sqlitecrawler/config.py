@@ -8,6 +8,14 @@ DATA_DIR = os.getenv("SQLITECRAWLER_DATA", os.path.abspath("./data"))
 os.makedirs(DATA_DIR, exist_ok=True)
 
 @dataclass
+class AuthConfig:
+    """Authentication configuration for crawling protected sites."""
+    username: str = ""
+    password: str = ""
+    auth_type: str = "basic"  # "basic" or "digest"
+    domain: str = ""  # Optional: restrict auth to specific domain
+
+@dataclass
 class HttpConfig:
     user_agent: str = os.getenv("SQLITECRAWLER_UA", "SQLiteCrawler/0.2 (+https://github.com/user256/SQLiteCrawler)")
     timeout: int = int(os.getenv("SQLITECRAWLER_TIMEOUT", "20"))
@@ -21,6 +29,8 @@ class HttpConfig:
     max_retries: int = int(os.getenv("SQLITECRAWLER_MAX_RETRIES", "3"))
     retry_delay: float = float(os.getenv("SQLITECRAWLER_RETRY_DELAY", "1.0"))
     retry_backoff_factor: float = float(os.getenv("SQLITECRAWLER_RETRY_BACKOFF", "2.0"))
+    # Authentication configuration
+    auth: AuthConfig = None
 
 @dataclass
 class CrawlLimits:

@@ -22,7 +22,7 @@ from .db import (
     batch_write_content,
     batch_write_content_with_url_resolution,
     batch_write_hreflang_sitemap_data,
-    batch_write_sitemap_validation,
+    batch_write_sitemaps_listed,
     batch_write_redirects,
     batch_write_internal_links,
     extract_content_from_html,
@@ -140,9 +140,10 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
         # Crawl sitemaps to discover URLs
         if sitemap_urls:
             print("Crawling sitemaps to discover URLs...")
-            sitemap_urls_dict = await crawl_sitemaps_recursive(sitemap_urls, http_config.user_agent, verbose=verbose)
+            sitemap_urls_dict, url_to_sitemap_mapping = await crawl_sitemaps_recursive(sitemap_urls, http_config.user_agent, verbose=verbose)
         else:
             sitemap_urls_dict = {}
+            url_to_sitemap_mapping = {}
     
     if sitemap_urls:
         print(f"Found {len(sitemap_urls)} sitemap(s): {sitemap_urls}")
@@ -157,23 +158,26 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
         
         # First, add all sitemap URLs to the urls table so we can reference them for hreflang data
         sitemap_urls_to_upsert = []
-        sitemap_validation_data = []
+        sitemap_tracking_data = []
+        position = 0
+        
         for url in sitemap_urls_dict.keys():
             url_norm = normalize_url_for_storage(url)
             # These are HTML pages discovered from sitemaps, not sitemap files themselves
             sitemap_urls_to_upsert.append((url_norm, "html", base_domain, None, True))  # is_from_sitemap=True
-            # Track which sitemap this URL came from (use the first sitemap URL for now)
-            if sitemap_urls:
-                sitemap_validation_data.append((url_norm, sitemap_urls[0]))
+            # Track which sitemap this URL came from with position
+            source_sitemap_url = url_to_sitemap_mapping.get(url, "unknown")
+            sitemap_tracking_data.append((url_norm, source_sitemap_url, position))
+            position += 1
         
         if sitemap_urls_to_upsert:
             print(f"Adding {len(sitemap_urls_to_upsert)} sitemap URLs to database...")
             await batch_upsert_urls(sitemap_urls_to_upsert, crawl_db_path)
             
-            # Add sitemap validation records
-            if sitemap_validation_data:
-                print(f"Adding {len(sitemap_validation_data)} sitemap validation records...")
-                await batch_write_sitemap_validation(sitemap_validation_data, crawl_db_path)
+            # Add sitemap tracking records
+            if sitemap_tracking_data:
+                print(f"Adding {len(sitemap_tracking_data)} sitemap tracking records...")
+                await batch_write_sitemaps_listed(sitemap_tracking_data, crawl_db_path)
         
         # Process hreflang data from sitemaps
         hreflang_data_to_write = []
@@ -213,6 +217,7 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
             
         # Check for URLs ready for retry first
         from .db import get_urls_ready_for_retry
+        import aiosqlite
         try:
             async with aiosqlite.connect(crawl_db_path) as conn:
                 retry_urls = await get_urls_ready_for_retry(conn, http_config.max_retries)
@@ -442,6 +447,7 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
     # Report retry statistics
     try:
         from .db import get_retry_statistics
+        import aiosqlite
         async with aiosqlite.connect(crawl_db_path) as conn:
             stats = await get_retry_statistics(conn)
             

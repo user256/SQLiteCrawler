@@ -3,14 +3,42 @@ import asyncio
 import aiohttp
 import json
 from typing import Dict, Tuple, List
-from .config import HttpConfig
+from urllib.parse import urlparse
+from .config import HttpConfig, AuthConfig
+
+def _should_use_auth(url: str, auth: AuthConfig) -> bool:
+    """Check if authentication should be used for this URL."""
+    if not auth or not auth.username or not auth.password:
+        return False
+    
+    # If domain is specified, only use auth for that domain
+    if auth.domain:
+        parsed_url = urlparse(url)
+        return parsed_url.netloc.lower() == auth.domain.lower()
+    
+    return True
+
+def _create_auth(auth: AuthConfig) -> aiohttp.BasicAuth:
+    """Create aiohttp authentication object."""
+    if auth.auth_type.lower() == "digest":
+        # Note: aiohttp doesn't have built-in digest auth support
+        # For now, we'll use basic auth and let the server handle it
+        return aiohttp.BasicAuth(auth.username, auth.password)
+    else:
+        return aiohttp.BasicAuth(auth.username, auth.password)
 
 async def fetch(url: str, cfg: HttpConfig) -> Tuple[int, str, Dict[str, str], str, str]:
     """Return (status, final_url, headers, text, url) for a single request."""
     timeout = aiohttp.ClientTimeout(total=cfg.timeout)
+    
+    # Prepare authentication if needed
+    auth = None
+    if _should_use_auth(url, cfg.auth):
+        auth = _create_auth(cfg.auth)
+    
     async with aiohttp.ClientSession(headers={"User-Agent": cfg.user_agent}, timeout=timeout) as session:
         try:
-            async with session.get(url, allow_redirects=True) as resp:
+            async with session.get(url, allow_redirects=True, auth=auth) as resp:
                 text = await resp.text(errors="ignore")
                 return resp.status, str(resp.url), dict(resp.headers), text, url
         except Exception:
@@ -21,13 +49,18 @@ async def fetch_with_redirect_tracking(url: str, cfg: HttpConfig) -> Tuple[int, 
     timeout = aiohttp.ClientTimeout(total=cfg.timeout)
     redirect_chain = []
     
+    # Prepare authentication if needed
+    auth = None
+    if _should_use_auth(url, cfg.auth):
+        auth = _create_auth(cfg.auth)
+    
     async with aiohttp.ClientSession(headers={"User-Agent": cfg.user_agent}, timeout=timeout) as session:
         try:
             current_url = url
             max_redirects = 10  # Prevent infinite redirects
             
             for _ in range(max_redirects):
-                async with session.get(current_url, allow_redirects=False) as resp:
+                async with session.get(current_url, allow_redirects=False, auth=auth) as resp:
                     # Record this step in the redirect chain
                     redirect_chain.append({
                         "url": current_url,
@@ -76,7 +109,18 @@ async def fetch_js(url: str, cfg: HttpConfig) -> Tuple[int, str, Dict[str, str],
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(user_agent=cfg.user_agent)
+            
+            # Prepare authentication context if needed
+            context_options = {"user_agent": cfg.user_agent}
+            if _should_use_auth(url, cfg.auth):
+                # For Playwright, we need to set HTTP credentials
+                context_options["http_credentials"] = {
+                    "username": cfg.auth.username,
+                    "password": cfg.auth.password,
+                    "origin": f"https://{urlparse(url).netloc}"
+                }
+            
+            context = await browser.new_context(**context_options)
             page = await context.new_page()
             try:
                 resp = await page.goto(url, timeout=cfg.timeout * 1000, wait_until="networkidle")
