@@ -10,6 +10,7 @@ A high-performance, persistent web crawler built with Python and SQLite. Feature
 - **Sitemap Discovery**: Automatic XML sitemap parsing and URL discovery
 - **Robots.txt Compliance**: Respects crawling policies, discovers sitemaps, and analyzes crawlability
 - **Link Analysis**: Internal/external link tracking with anchor text, XPath, and metadata
+- **Schema.org Extraction**: Extracts and validates JSON-LD, microdata, and RDFa structured data
 - **Hreflang Support**: Extracts and normalizes hreflang data from sitemaps
 - **Database Normalization**: Efficient storage with URL IDs and compressed content
 - **Async Performance**: Concurrent requests with configurable limits
@@ -110,6 +111,8 @@ python main.py https://example.com/ --js
 - **`indexability`**: Robots.txt, HTML meta, and HTTP header analysis for crawlability
 - **`hreflang_*`**: Normalized hreflang data from sitemaps, HTTP headers, and HTML
 - **`sitemaps_listed`**: URLs discovered from sitemaps for validation
+- **`schema_data`**: Schema.org structured data (JSON-LD, microdata, RDFa) with validation
+- **`schema_types`**: Normalized schema.org type names
 
 ## Command Line Options
 
@@ -235,6 +238,25 @@ WHERE i.robots_txt_allows = 0;  -- Find disallowed URLs
 SELECT source_url, target_url, anchor_text, xpath, href
 FROM internal_links_analysis
 WHERE source_url LIKE '%example.com%';
+```
+
+### Analyze Schema.org Data
+```sql
+-- Find all pages with structured data
+SELECT url, schema_type, format, is_valid, validation_errors
+FROM schema_analysis
+WHERE is_valid = 1;
+
+-- Count schema types by format
+SELECT schema_type, format, COUNT(*) as count
+FROM schema_analysis
+GROUP BY schema_type, format
+ORDER BY count DESC;
+
+-- Find pages with invalid schema
+SELECT url, schema_type, validation_errors
+FROM schema_analysis
+WHERE is_valid = 0;
 ```
 
 ## Performance Tips

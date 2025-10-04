@@ -28,8 +28,8 @@ def decompress_headers(encoded: bytes) -> dict:
     except Exception:
         return {}
 
-def extract_content_from_html(html: str, headers: dict = None) -> dict:
-    """Extract title, meta description, robots, canonical, h1, h2 tags and word count from HTML."""
+def extract_content_from_html(html: str, headers: dict = None, base_url: str = None) -> dict:
+    """Extract title, meta description, robots, canonical, h1, h2 tags, word count, and schema data from HTML."""
     try:
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(html, 'html.parser')
@@ -81,6 +81,16 @@ def extract_content_from_html(html: str, headers: dict = None) -> dict:
                 directives = [d.strip().lower() for d in robots_header.split(',')]
                 http_header_directives = directives
         
+        # Extract schema data if base_url is provided
+        schema_data = []
+        if base_url:
+            try:
+                from .schema import extract_schema_data
+                schema_data = extract_schema_data(html, base_url)
+            except Exception as e:
+                print(f"Error extracting schema data: {e}")
+                schema_data = []
+        
         return {
             'title': title,
             'meta_description': meta_description,
@@ -90,7 +100,8 @@ def extract_content_from_html(html: str, headers: dict = None) -> dict:
             'html_meta_directives': html_meta_directives,
             'http_header_directives': http_header_directives,
             'canonical_url': canonical_url,
-            'html_lang': html_lang
+            'html_lang': html_lang,
+            'schema_data': schema_data
         }
     except Exception as e:
         print(f"Error extracting content from HTML: {e}")
@@ -103,7 +114,8 @@ def extract_content_from_html(html: str, headers: dict = None) -> dict:
             'html_meta_directives': [],
             'http_header_directives': [],
             'canonical_url': None,
-            'html_lang': None
+            'html_lang': None,
+            'schema_data': []
         }
 
 # ------------------ database connection pool ------------------
@@ -436,6 +448,34 @@ CREATE INDEX IF NOT EXISTS idx_failed_urls_status ON failed_urls(status_code);
 CREATE INDEX IF NOT EXISTS idx_failed_urls_next_retry ON failed_urls(next_retry_at);
 CREATE INDEX IF NOT EXISTS idx_failed_urls_retry_count ON failed_urls(retry_count);
 
+-- Schema.org structured data tables
+-- Normalized schema types table
+CREATE TABLE IF NOT EXISTS schema_types (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  type_name TEXT UNIQUE NOT NULL  -- e.g., 'Article', 'Product', 'Organization', 'BreadcrumbList'
+);
+CREATE INDEX IF NOT EXISTS idx_schema_types_name ON schema_types(type_name);
+
+-- Schema.org structured data table
+CREATE TABLE IF NOT EXISTS schema_data (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  url_id INTEGER NOT NULL,
+  schema_type_id INTEGER NOT NULL,
+  format TEXT CHECK (format IN ('json-ld', 'microdata', 'rdfa')) NOT NULL,
+  raw_data TEXT NOT NULL,  -- The original structured data (JSON for JSON-LD, HTML for microdata/rdfa)
+  parsed_data TEXT,  -- Normalized/parsed data as JSON
+  position INTEGER,  -- Position on page (for multiple instances of same type)
+  is_valid BOOLEAN DEFAULT TRUE,  -- Whether the structured data is valid
+  validation_errors TEXT,  -- JSON array of validation errors if any
+  discovered_at INTEGER NOT NULL,
+  FOREIGN KEY (url_id) REFERENCES urls (id),
+  FOREIGN KEY (schema_type_id) REFERENCES schema_types (id)
+);
+CREATE INDEX IF NOT EXISTS idx_schema_data_url_id ON schema_data(url_id);
+CREATE INDEX IF NOT EXISTS idx_schema_data_type ON schema_data(schema_type_id);
+CREATE INDEX IF NOT EXISTS idx_schema_data_format ON schema_data(format);
+CREATE INDEX IF NOT EXISTS idx_schema_data_valid ON schema_data(is_valid);
+
 -- View for comprehensive page analysis
 CREATE VIEW IF NOT EXISTS page_analysis AS
 SELECT 
@@ -522,6 +562,24 @@ LEFT JOIN frontier f ON sl.url_id = f.url_id
 LEFT JOIN pages p ON sl.url_id = p.url_id
 GROUP BY sl.sitemap_url
 ORDER BY total_urls DESC;
+
+-- View for schema.org analysis
+CREATE VIEW IF NOT EXISTS schema_analysis AS
+SELECT 
+    u.url,
+    st.type_name as schema_type,
+    sd.format,
+    sd.position,
+    sd.is_valid,
+    sd.validation_errors,
+    sd.discovered_at,
+    sd.raw_data,
+    sd.parsed_data
+FROM schema_data sd
+JOIN urls u ON sd.url_id = u.id
+JOIN schema_types st ON sd.schema_type_id = st.id
+WHERE u.classification IN ('internal', 'network')
+ORDER BY u.url, sd.position;
 """
 
 async def init_pages_db(db_path: str = PAGES_DB_PATH):
@@ -825,152 +883,193 @@ async def batch_write_content_with_url_resolution(content_data: List[Tuple[str, 
     if not content_data:
         return
     
-    async with aiosqlite.connect(crawl_db_path) as conn:
-        for url, content_info, base_domain in content_data:
-            # Get URL ID
-            cursor = await conn.execute("SELECT id FROM urls WHERE url = ?", (url,))
-            row = await cursor.fetchone()
-            if not row:
+    # Retry logic for database locks
+    for attempt in range(3):
+        try:
+            async with aiosqlite.connect(crawl_db_path, timeout=30.0) as conn:
+                for url, content_info, base_domain in content_data:
+                    # Get URL ID
+                    cursor = await conn.execute("SELECT id FROM urls WHERE url = ?", (url,))
+                    row = await cursor.fetchone()
+                    if not row:
+                        continue
+                    
+                    url_id = row[0]
+                    
+                    # Get or create normalized IDs
+                    meta_description_id = await get_or_create_meta_description_id(content_info['meta_description'], conn)
+                    html_lang_id = await get_or_create_html_language_id(content_info['html_lang'], conn)
+                    
+                    # Insert/update content
+                    await conn.execute(
+                        """
+                        INSERT INTO content(url_id, title, meta_description_id, h1_tags, h2_tags, word_count, html_lang_id)
+                        VALUES (?,?,?,?,?,?,?)
+                        ON CONFLICT(url_id) DO UPDATE SET
+                          title=excluded.title,
+                          meta_description_id=excluded.meta_description_id,
+                          h1_tags=excluded.h1_tags,
+                          h2_tags=excluded.h2_tags,
+                          word_count=excluded.word_count,
+                          html_lang_id=excluded.html_lang_id
+                        """,
+                        (
+                            url_id,
+                            content_info['title'],
+                            meta_description_id,
+                            json.dumps(content_info['h1_tags'], ensure_ascii=False),
+                            json.dumps(content_info['h2_tags'], ensure_ascii=False),
+                            content_info['word_count'],
+                            html_lang_id
+                        )
+                    )
+                    
+                    # Insert robots directives from HTML meta
+                    if content_info['html_meta_directives']:
+                        for directive in content_info['html_meta_directives']:
+                            directive_id = await get_or_create_robots_directive_id(directive, conn)
+                            await conn.execute(
+                                """
+                                INSERT OR IGNORE INTO robots_directives(url_id, source, directive_id)
+                                VALUES (?, 'html_meta', ?)
+                                """,
+                                (url_id, directive_id)
+                            )
+                    
+                    # Insert robots directives from HTTP headers
+                    if content_info['http_header_directives']:
+                        for directive in content_info['http_header_directives']:
+                            directive_id = await get_or_create_robots_directive_id(directive, conn)
+                            await conn.execute(
+                                """
+                                INSERT OR IGNORE INTO robots_directives(url_id, source, directive_id)
+                                VALUES (?, 'http_header', ?)
+                                """,
+                                (url_id, directive_id)
+                            )
+                    
+                    # Insert canonical URL from HTML head
+                    if content_info['canonical_url']:
+                        canonical_url_id = await get_or_create_canonical_url_id(content_info['canonical_url'], base_domain, conn)
+                        await conn.execute(
+                            """
+                            INSERT OR IGNORE INTO canonical_urls(url_id, canonical_url_id, source)
+                            VALUES (?, ?, 'html_head')
+                            """,
+                            (url_id, canonical_url_id)
+                        )
+                    
+                    # Calculate indexability
+                    html_meta_allows = not any('noindex' in d for d in content_info['html_meta_directives'])
+                    http_header_allows = not any('noindex' in d for d in content_info['http_header_directives'])
+                    
+                    # Check robots.txt for this URL
+                    from urllib.parse import urlparse
+                    from .robots import is_url_crawlable
+                    parsed_url = urlparse(url)
+                    domain = parsed_url.netloc
+                    robots_txt_allows = is_url_crawlable(url, "SQLiteCrawler/0.2")
+                    
+                    # Store robots.txt directives if any
+                    robots_txt_directives = []
+                    if not robots_txt_allows:
+                        robots_txt_directives.append('disallow')
+                    
+                    # Insert/update indexability summary
+                    await conn.execute(
+                        """
+                        INSERT INTO indexability(url_id, robots_txt_allows, html_meta_allows, http_header_allows, 
+                                               robots_txt_directives, html_meta_directives, http_header_directives, overall_indexable)
+                        VALUES (?,?,?,?,?,?,?,?)
+                        ON CONFLICT(url_id) DO UPDATE SET
+                          robots_txt_allows=excluded.robots_txt_allows,
+                          html_meta_allows=excluded.html_meta_allows,
+                          http_header_allows=excluded.http_header_allows,
+                          robots_txt_directives=excluded.robots_txt_directives,
+                          html_meta_directives=excluded.html_meta_directives,
+                          http_header_directives=excluded.http_header_directives,
+                          overall_indexable=excluded.overall_indexable
+                        """,
+                        (
+                            url_id,
+                            robots_txt_allows,
+                            html_meta_allows,
+                            http_header_allows,
+                            json.dumps(robots_txt_directives, ensure_ascii=False),
+                            json.dumps(content_info['html_meta_directives'], ensure_ascii=False),
+                            json.dumps(content_info['http_header_directives'], ensure_ascii=False),
+                            robots_txt_allows and html_meta_allows and http_header_allows  # Overall indexable
+                        )
+                    )
+                    
+                    # Process schema data if present
+                    if content_info.get('schema_data'):
+                        schema_records = []
+                        for schema_item in content_info['schema_data']:
+                            # Get or create schema type ID using the same connection
+                            schema_type_id = await get_or_create_schema_type_id(crawl_db_path, schema_item['type'], conn)
+                            
+                            schema_records.append((
+                                url_id,
+                                schema_type_id,
+                                schema_item['format'],
+                                schema_item['raw_data'],
+                                schema_item['parsed_data'],
+                                schema_item['position'],
+                                schema_item['is_valid'],
+                                json.dumps(schema_item['validation_errors']) if schema_item['validation_errors'] else None,
+                                int(time.time())
+                            ))
+                        
+                        # Batch insert schema data
+                        if schema_records:
+                            await conn.executemany("""
+                                INSERT INTO schema_data 
+                                (url_id, schema_type_id, format, raw_data, parsed_data, position, is_valid, validation_errors, discovered_at)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """, schema_records)
+                
+                await conn.commit()
+                break  # Success, exit retry loop
+                
+        except aiosqlite.OperationalError as e:
+            if "database is locked" in str(e) and attempt < 2:
+                import asyncio
+                await asyncio.sleep(0.1 * (attempt + 1))  # Exponential backoff
                 continue
-            
-            url_id = row[0]
-            
-            # Get or create normalized IDs
-            meta_description_id = await get_or_create_meta_description_id(content_info['meta_description'], conn)
-            html_lang_id = await get_or_create_html_language_id(content_info['html_lang'], conn)
-            
-            # Insert/update content
-            await conn.execute(
-                """
-                INSERT INTO content(url_id, title, meta_description_id, h1_tags, h2_tags, word_count, html_lang_id)
-                VALUES (?,?,?,?,?,?,?)
-                ON CONFLICT(url_id) DO UPDATE SET
-                  title=excluded.title,
-                  meta_description_id=excluded.meta_description_id,
-                  h1_tags=excluded.h1_tags,
-                  h2_tags=excluded.h2_tags,
-                  word_count=excluded.word_count,
-                  html_lang_id=excluded.html_lang_id
-                """,
-                (
-                    url_id,
-                    content_info['title'],
-                    meta_description_id,
-                    json.dumps(content_info['h1_tags'], ensure_ascii=False),
-                    json.dumps(content_info['h2_tags'], ensure_ascii=False),
-                    content_info['word_count'],
-                    html_lang_id
-                )
-            )
-            
-            # Insert robots directives from HTML meta
-            if content_info['html_meta_directives']:
-                for directive in content_info['html_meta_directives']:
-                    directive_id = await get_or_create_robots_directive_id(directive, conn)
-                    await conn.execute(
-                        """
-                        INSERT OR IGNORE INTO robots_directives(url_id, source, directive_id)
-                        VALUES (?, 'html_meta', ?)
-                        """,
-                        (url_id, directive_id)
-                    )
-            
-            # Insert robots directives from HTTP headers
-            if content_info['http_header_directives']:
-                for directive in content_info['http_header_directives']:
-                    directive_id = await get_or_create_robots_directive_id(directive, conn)
-                    await conn.execute(
-                        """
-                        INSERT OR IGNORE INTO robots_directives(url_id, source, directive_id)
-                        VALUES (?, 'http_header', ?)
-                        """,
-                        (url_id, directive_id)
-                    )
-            
-            # Insert canonical URL from HTML head
-            if content_info['canonical_url']:
-                canonical_url_id = await get_or_create_canonical_url_id(content_info['canonical_url'], base_domain, conn)
-                await conn.execute(
-                    """
-                    INSERT OR IGNORE INTO canonical_urls(url_id, canonical_url_id, source)
-                    VALUES (?, ?, 'html_head')
-                    """,
-                    (url_id, canonical_url_id)
-                )
-            
-            # Calculate indexability
-            html_meta_allows = not any('noindex' in d for d in content_info['html_meta_directives'])
-            http_header_allows = not any('noindex' in d for d in content_info['http_header_directives'])
-            
-            # Check robots.txt for this URL
-            from urllib.parse import urlparse
-            from .robots import is_url_crawlable
-            parsed_url = urlparse(url)
-            domain = parsed_url.netloc
-            robots_txt_allows = is_url_crawlable(url, "SQLiteCrawler/0.2")
-            
-            # Store robots.txt directives if any
-            robots_txt_directives = []
-            if not robots_txt_allows:
-                robots_txt_directives.append('disallow')
-            
-            # Insert/update indexability summary
-            await conn.execute(
-                """
-                INSERT INTO indexability(url_id, robots_txt_allows, html_meta_allows, http_header_allows, 
-                                       robots_txt_directives, html_meta_directives, http_header_directives, overall_indexable)
-                VALUES (?,?,?,?,?,?,?,?)
-                ON CONFLICT(url_id) DO UPDATE SET
-                  robots_txt_allows=excluded.robots_txt_allows,
-                  html_meta_allows=excluded.html_meta_allows,
-                  http_header_allows=excluded.http_header_allows,
-                  robots_txt_directives=excluded.robots_txt_directives,
-                  html_meta_directives=excluded.html_meta_directives,
-                  http_header_directives=excluded.http_header_directives,
-                  overall_indexable=excluded.overall_indexable
-                """,
-                (
-                    url_id,
-                    robots_txt_allows,
-                    html_meta_allows,
-                    http_header_allows,
-                    json.dumps(robots_txt_directives, ensure_ascii=False),
-                    json.dumps(content_info['html_meta_directives'], ensure_ascii=False),
-                    json.dumps(content_info['http_header_directives'], ensure_ascii=False),
-                    robots_txt_allows and html_meta_allows and http_header_allows  # Overall indexable
-                )
-            )
-        
-        await conn.commit()
+            raise
 
 async def batch_write_internal_links(links_data: List[Tuple[str, list, str]], crawl_db_path: str):
     """Write internal links data with normalized references and URL components."""
     if not links_data:
         return
     
-    async with aiosqlite.connect(crawl_db_path) as conn:
-        for source_url, detailed_links, base_domain in links_data:
-            # Get source URL ID
-            cursor = await conn.execute("SELECT id FROM urls WHERE url = ?", (source_url,))
-            row = await cursor.fetchone()
-            if not row:
-                continue
-            
-            source_url_id = row[0]
-            now = int(time.time())
-            
-            # Count internal vs external links
-            internal_count = 0
-            external_count = 0
-            internal_unique = set()
-            external_unique = set()
-            
-            for link_info in detailed_links:
-                target_url = link_info['url']
-                href_original = link_info['href']
-                
-                # Parse URL components
-                url_components = parse_url_components(href_original, source_url)
+    # Retry logic for database locks
+    for attempt in range(3):
+        try:
+            async with aiosqlite.connect(crawl_db_path, timeout=30.0) as conn:
+                for source_url, detailed_links, base_domain in links_data:
+                    # Get source URL ID
+                    cursor = await conn.execute("SELECT id FROM urls WHERE url = ?", (source_url,))
+                    row = await cursor.fetchone()
+                    if not row:
+                        continue
+                    
+                    source_url_id = row[0]
+                    now = int(time.time())
+                    
+                    # Count internal vs external links
+                    internal_count = 0
+                    external_count = 0
+                    internal_unique = set()
+                    external_unique = set()
+                    
+                    for link_info in detailed_links:
+                        target_url = link_info['url']
+                        href_original = link_info['href']
+                        
+                        # Parse URL components
+                        url_components = parse_url_components(href_original, source_url)
                 
                 # Get or create normalized IDs
                 anchor_text_id = await get_or_create_anchor_text_id(link_info['anchor_text'], conn)
@@ -1015,27 +1114,35 @@ async def batch_write_internal_links(links_data: List[Tuple[str, list, str]], cr
                 else:
                     external_count += 1
                     external_unique.add(url_components['href'])
-            
-            # Update content table with link counts
-            await conn.execute(
-                """
-                UPDATE content 
-                SET internal_links_count = ?, 
-                    external_links_count = ?,
-                    internal_links_unique_count = ?,
-                    external_links_unique_count = ?
-                WHERE url_id = ?
-                """,
-                (
-                    internal_count,
-                    external_count,
-                    len(internal_unique),
-                    len(external_unique),
-                    source_url_id
-                )
-            )
+                    
+                    # Update content table with link counts
+                    await conn.execute(
+                        """
+                        UPDATE content 
+                        SET internal_links_count = ?, 
+                            external_links_count = ?,
+                            internal_links_unique_count = ?,
+                            external_links_unique_count = ?
+                        WHERE url_id = ?
+                        """,
+                        (
+                            internal_count,
+                            external_count,
+                            len(internal_unique),
+                            len(external_unique),
+                            source_url_id
+                        )
+                    )
         
-        await conn.commit()
+                await conn.commit()
+                break  # Success, exit retry loop
+                
+        except aiosqlite.OperationalError as e:
+            if "database is locked" in str(e) and attempt < 2:
+                import asyncio
+                await asyncio.sleep(0.1 * (attempt + 1))  # Exponential backoff
+                continue
+            raise
 
 async def get_or_create_anchor_text_id(anchor_text: str, conn: aiosqlite.Connection) -> int:
     """Get or create anchor text ID."""
@@ -1519,3 +1626,90 @@ async def frontier_stats(db_path: str = CRAWL_DB_PATH) -> Tuple[int, int]:
         cur = await db.execute("SELECT SUM(status='queued'), SUM(status='done') FROM frontier")
         row = await cur.fetchone()
         return (int(row[0] or 0), int(row[1] or 0))
+
+
+# ------------------ Schema.org functions ------------------
+
+async def get_or_create_schema_type_id(crawl_db_path: str, type_name: str, conn: aiosqlite.Connection = None) -> int:
+    """Get or create a schema type ID."""
+    if conn:
+        # Use existing connection
+        cursor = await conn.execute("SELECT id FROM schema_types WHERE type_name = ?", (type_name,))
+        result = await cursor.fetchone()
+        
+        if result:
+            return result[0]
+        
+        # Create new schema type
+        cursor = await conn.execute("INSERT INTO schema_types (type_name) VALUES (?)", (type_name,))
+        return cursor.lastrowid
+    else:
+        # Create new connection with timeout and retry
+        for attempt in range(3):
+            try:
+                async with aiosqlite.connect(crawl_db_path, timeout=30.0) as db:
+                    # Try to get existing ID
+                    cursor = await db.execute("SELECT id FROM schema_types WHERE type_name = ?", (type_name,))
+                    result = await cursor.fetchone()
+                    
+                    if result:
+                        return result[0]
+                    
+                    # Create new schema type
+                    cursor = await db.execute("INSERT INTO schema_types (type_name) VALUES (?)", (type_name,))
+                    await db.commit()
+                    return cursor.lastrowid
+            except aiosqlite.OperationalError as e:
+                if "database is locked" in str(e) and attempt < 2:
+                    import asyncio
+                    await asyncio.sleep(0.1 * (attempt + 1))  # Exponential backoff
+                    continue
+                raise
+
+
+async def batch_write_schema_data(schema_data_list: List[Dict[str, Any]], crawl_db_path: str):
+    """Write schema data to database in batch."""
+    if not schema_data_list:
+        return
+    
+    async with aiosqlite.connect(crawl_db_path) as db:
+        # Get URL IDs for all URLs
+        url_ids = {}
+        for item in schema_data_list:
+            url = item['url']
+            if url not in url_ids:
+                cursor = await db.execute("SELECT id FROM urls WHERE url = ?", (url,))
+                result = await cursor.fetchone()
+                if result:
+                    url_ids[url] = result[0]
+        
+        # Prepare schema data for insertion
+        schema_records = []
+        for item in schema_data_list:
+            url_id = url_ids.get(item['url'])
+            if not url_id:
+                continue
+            
+            # Get or create schema type ID
+            schema_type_id = await get_or_create_schema_type_id(crawl_db_path, item['type'])
+            
+            schema_records.append((
+                url_id,
+                schema_type_id,
+                item['format'],
+                item['raw_data'],
+                item['parsed_data'],
+                item['position'],
+                item['is_valid'],
+                json.dumps(item['validation_errors']) if item['validation_errors'] else None,
+                int(time.time())
+            ))
+        
+        # Batch insert schema data
+        if schema_records:
+            await db.executemany("""
+                INSERT INTO schema_data 
+                (url_id, schema_type_id, format, raw_data, parsed_data, position, is_valid, validation_errors, discovered_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, schema_records)
+            await db.commit()

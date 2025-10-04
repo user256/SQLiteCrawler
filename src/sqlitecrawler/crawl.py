@@ -369,7 +369,7 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
                     pages_to_write.append((original_norm, final_norm, status, headers_norm, text, base_domain))
                     
                     # Extract content from HTML
-                    content_data = extract_content_from_html(text, headers)
+                    content_data = extract_content_from_html(text, headers, original_norm)
                     if content_data['title'] or content_data['meta_description'] or content_data['h1_tags'] or content_data['h2_tags']:
                         # We'll need the URL ID, so we'll add this to content_to_write with a placeholder
                         # The actual URL ID will be resolved during batch processing
