@@ -42,7 +42,26 @@
 * ✅ Fixed import path issues - corrected relative imports in db.py
 * ✅ Updated indexability calculation - now includes robots_txt_allows in overall indexability
 
+## Retry functionality ✅ COMPLETED
+* ✅ Implemented comprehensive retry functionality for failed URL requests
+* ✅ Smart retry logic: retries 0, 408, 420, 423, 429, 451, and all 5xx status codes
+* ✅ Exponential backoff with configurable delay and backoff factor
+* ✅ Database tracking of failed URLs with retry counts and timestamps
+* ✅ Automatic retry scheduling - URLs are re-queued when ready
+* ✅ Enhanced failure reason reporting with descriptive messages
+* ✅ Comprehensive retry statistics reporting by status code and attempt count
+* ✅ Command line configuration: --max-retries, --retry-delay, --retry-backoff
+* ✅ Graceful handling of permanent failures (404, etc.) - no unnecessary retries
+
+## fetch assets
+* options to also crawl any js/image/iframe/fonts and other linked assets
+* report on caching / assets with no cache / cache busting
+
+## evaluate preconnect/preload/prefetch
+look for potential speed improvements
+
 ## Code Cleanup Questions (REMAINING)
+* we have a sitmap table, does it list sitemaps with count of urls found in each - does urls list refer to an index of sitemaps its found in? if not we'd want this
 * I'm unclear on the purpose of sitemap_validation ? is this something we need or can it be removed
 
 ## extraction

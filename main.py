@@ -55,6 +55,14 @@ Examples:
     p.add_argument("--max-workers", type=int, default=2,
                    help="Maximum number of worker threads for database operations (default: 2)")
     
+    # Retry configuration
+    p.add_argument("--max-retries", type=int, default=3,
+                   help="Maximum number of retry attempts for failed URLs (default: 3)")
+    p.add_argument("--retry-delay", type=float, default=1.0,
+                   help="Initial delay between retries in seconds (default: 1.0)")
+    p.add_argument("--retry-backoff", type=float, default=2.0,
+                   help="Backoff factor for retry delays (default: 2.0)")
+    
     # Output and logging
     p.add_argument("--verbose", "-v", action="store_true", 
                    help="Enable verbose output")
@@ -85,6 +93,9 @@ Examples:
         ignore_robots_crawlability=args.ignore_robots,
         skip_robots_sitemaps=args.skip_robots_sitemaps,
         skip_sitemaps=args.skip_sitemaps,
+        max_retries=args.max_retries,
+        retry_delay=args.retry_delay,
+        retry_backoff_factor=args.retry_backoff,
     )
     
     # Print configuration if verbose
@@ -99,6 +110,9 @@ Examples:
         print(f"  Timeout: {http_config.timeout}s")
         print(f"  Concurrency: {http_config.max_concurrency}")
         print(f"  Delay: {http_config.delay_between_requests}s")
+        print(f"  Max Retries: {http_config.max_retries}")
+        print(f"  Retry Delay: {http_config.retry_delay}s")
+        print(f"  Retry Backoff: {http_config.retry_backoff_factor}x")
         print(f"  Respect robots.txt: {http_config.respect_robots_txt}")
         print(f"  Ignore robots for crawlability: {http_config.ignore_robots_crawlability}")
         print(f"  Skip robots.txt sitemaps: {http_config.skip_robots_sitemaps}")

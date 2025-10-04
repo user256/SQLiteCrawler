@@ -17,6 +17,10 @@ class HttpConfig:
     ignore_robots_crawlability: bool = False
     skip_robots_sitemaps: bool = False
     skip_sitemaps: bool = False
+    # Retry configuration
+    max_retries: int = int(os.getenv("SQLITECRAWLER_MAX_RETRIES", "3"))
+    retry_delay: float = float(os.getenv("SQLITECRAWLER_RETRY_DELAY", "1.0"))
+    retry_backoff_factor: float = float(os.getenv("SQLITECRAWLER_RETRY_BACKOFF", "2.0"))
 
 @dataclass
 class CrawlLimits:

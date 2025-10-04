@@ -208,7 +208,7 @@ CREATE INDEX IF NOT EXISTS idx_urls_classification ON urls(classification);
 CREATE TABLE IF NOT EXISTS content (
   url_id INTEGER PRIMARY KEY,
   title TEXT,
-  meta_description TEXT,
+  meta_description_id INTEGER,  -- Reference to normalized meta description
   h1_tags TEXT,  -- JSON array of h1 texts
   h2_tags TEXT,  -- JSON array of h2 texts
   word_count INTEGER,
@@ -221,6 +221,7 @@ CREATE TABLE IF NOT EXISTS content (
   inlinks_count INTEGER DEFAULT 0,
   inlinks_unique_count INTEGER DEFAULT 0,
   FOREIGN KEY (url_id) REFERENCES urls (id),
+  FOREIGN KEY (meta_description_id) REFERENCES meta_descriptions (id),
   FOREIGN KEY (html_lang_id) REFERENCES html_languages (id)
 );
 CREATE INDEX IF NOT EXISTS idx_content_url_id ON content(url_id);
@@ -238,6 +239,13 @@ CREATE TABLE IF NOT EXISTS html_languages (
   language_code TEXT UNIQUE NOT NULL  -- e.g., 'en', 'en-US', 'fr-CA'
 );
 CREATE INDEX IF NOT EXISTS idx_html_languages_code ON html_languages(language_code);
+
+-- Normalized meta descriptions table
+CREATE TABLE IF NOT EXISTS meta_descriptions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  description TEXT UNIQUE NOT NULL  -- The actual meta description text
+);
+CREATE INDEX IF NOT EXISTS idx_meta_descriptions_text ON meta_descriptions(description);
 
 -- Normalized xpath table  
 CREATE TABLE IF NOT EXISTS xpaths (
@@ -426,6 +434,23 @@ CREATE TABLE IF NOT EXISTS sitemaps_listed (
 CREATE INDEX IF NOT EXISTS idx_sitemaps_listed_url_id ON sitemaps_listed(url_id);
 CREATE INDEX IF NOT EXISTS idx_sitemaps_listed_sitemap ON sitemaps_listed(sitemap_url);
 
+-- Failed URLs retry tracking table
+CREATE TABLE IF NOT EXISTS failed_urls (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  url_id INTEGER NOT NULL,
+  status_code INTEGER NOT NULL,  -- The HTTP status code that caused the failure
+  failure_reason TEXT,  -- Additional failure details (timeout, connection error, etc.)
+  retry_count INTEGER DEFAULT 0,  -- Number of retry attempts made
+  last_retry_at INTEGER,  -- Timestamp of last retry attempt
+  next_retry_at INTEGER,  -- When this URL should be retried next
+  created_at INTEGER NOT NULL,  -- When this failure was first recorded
+  FOREIGN KEY (url_id) REFERENCES urls (id)
+);
+CREATE INDEX IF NOT EXISTS idx_failed_urls_url_id ON failed_urls(url_id);
+CREATE INDEX IF NOT EXISTS idx_failed_urls_status ON failed_urls(status_code);
+CREATE INDEX IF NOT EXISTS idx_failed_urls_next_retry ON failed_urls(next_retry_at);
+CREATE INDEX IF NOT EXISTS idx_failed_urls_retry_count ON failed_urls(retry_count);
+
 -- View for comprehensive page analysis
 CREATE VIEW IF NOT EXISTS page_analysis AS
 SELECT 
@@ -433,7 +458,7 @@ SELECT
     u.kind,
     u.classification,
     c.title,
-    c.meta_description,
+    md.description as meta_description,
     c.h1_tags,
     c.h2_tags,
     c.word_count,
@@ -465,6 +490,7 @@ SELECT
      LIMIT 1) as self_hreflang
 FROM urls u
 LEFT JOIN content c ON u.id = c.url_id
+LEFT JOIN meta_descriptions md ON c.meta_description_id = md.id
 LEFT JOIN html_languages hl ON c.html_lang_id = hl.id
 LEFT JOIN indexability i ON u.id = i.url_id
 LEFT JOIN canonical_urls cu ON u.id = cu.url_id
@@ -803,17 +829,18 @@ async def batch_write_content_with_url_resolution(content_data: List[Tuple[str, 
             
             url_id = row[0]
             
-            # Get or create HTML language ID
+            # Get or create normalized IDs
+            meta_description_id = await get_or_create_meta_description_id(content_info['meta_description'], conn)
             html_lang_id = await get_or_create_html_language_id(content_info['html_lang'], conn)
             
             # Insert/update content
             await conn.execute(
                 """
-                INSERT INTO content(url_id, title, meta_description, h1_tags, h2_tags, word_count, html_lang_id)
+                INSERT INTO content(url_id, title, meta_description_id, h1_tags, h2_tags, word_count, html_lang_id)
                 VALUES (?,?,?,?,?,?,?)
                 ON CONFLICT(url_id) DO UPDATE SET
                   title=excluded.title,
-                  meta_description=excluded.meta_description,
+                  meta_description_id=excluded.meta_description_id,
                   h1_tags=excluded.h1_tags,
                   h2_tags=excluded.h2_tags,
                   word_count=excluded.word_count,
@@ -822,7 +849,7 @@ async def batch_write_content_with_url_resolution(content_data: List[Tuple[str, 
                 (
                     url_id,
                     content_info['title'],
-                    content_info['meta_description'],
+                    meta_description_id,
                     json.dumps(content_info['h1_tags'], ensure_ascii=False),
                     json.dumps(content_info['h2_tags'], ensure_ascii=False),
                     content_info['word_count'],
@@ -1107,6 +1134,20 @@ def parse_url_components(href: str, base_url: str) -> dict:
         'is_absolute': is_absolute
     }
 
+async def get_or_create_meta_description_id(description: str, conn: aiosqlite.Connection) -> int:
+    """Get or create meta description ID."""
+    if not description:
+        return None
+    
+    cursor = await conn.execute("SELECT id FROM meta_descriptions WHERE description = ?", (description,))
+    row = await cursor.fetchone()
+    if row:
+        return row[0]
+    
+    # Create new meta description
+    cursor = await conn.execute("INSERT INTO meta_descriptions(description) VALUES (?)", (description,))
+    return cursor.lastrowid
+
 async def get_or_create_html_language_id(language_code: str, conn: aiosqlite.Connection) -> int:
     """Get or create HTML language ID."""
     if not language_code:
@@ -1131,6 +1172,108 @@ async def get_or_create_hreflang_language_id(language_code: str, conn: aiosqlite
     # Create new language code
     cursor = await conn.execute("INSERT INTO hreflang_languages(language_code) VALUES (?)", (language_code,))
     return cursor.lastrowid
+
+def should_retry_status_code(status_code: int) -> bool:
+    """Determine if a status code should be retried."""
+    # Status codes worth retrying:
+    # 0 = connection/timeout errors
+    # 5xx = server errors (500, 502, 503, 504, 507, 508, etc.)
+    # Some 4xx codes that might be temporary
+    
+    if status_code == 0:
+        return True  # Connection/timeout errors
+    elif 500 <= status_code < 600:
+        return True  # Server errors (500, 502, 503, 504, 507, 508, etc.)
+    elif status_code in [408, 423, 429, 451, 420]:
+        # Temporary client issues worth retrying:
+        # 408 = Request Timeout (server might be slow)
+        # 423 = Locked (resource temporarily locked)
+        # 429 = Too Many Requests (rate limited)
+        # 420 = Enhance Your Calm (Twitter rate limiting)
+        # 451 = Unavailable For Legal Reasons (might be temporary geo-blocking)
+        return True
+    else:
+        return False  # Don't retry other 4xx client errors, 3xx redirects, 2xx success
+
+async def record_failed_url(url_id: int, status_code: int, failure_reason: str, conn: aiosqlite.Connection, retry_delay: float = 1.0, backoff_factor: float = 2.0):
+    """Record a failed URL for potential retry."""
+    import time
+    
+    now = int(time.time())
+    
+    # Check if this URL is already in failed_urls
+    cursor = await conn.execute("SELECT retry_count FROM failed_urls WHERE url_id = ?", (url_id,))
+    row = await cursor.fetchone()
+    
+    if row:
+        # Update existing failed URL
+        retry_count = row[0] + 1
+        next_retry_delay = retry_delay * (backoff_factor ** retry_count)
+        next_retry_at = now + int(next_retry_delay)
+        
+        await conn.execute(
+            """
+            UPDATE failed_urls 
+            SET status_code = ?, failure_reason = ?, retry_count = ?, 
+                last_retry_at = ?, next_retry_at = ?
+            WHERE url_id = ?
+            """,
+            (status_code, failure_reason, retry_count, now, next_retry_at, url_id)
+        )
+    else:
+        # Insert new failed URL
+        next_retry_at = now + int(retry_delay)
+        await conn.execute(
+            """
+            INSERT INTO failed_urls (url_id, status_code, failure_reason, retry_count, last_retry_at, next_retry_at, created_at)
+            VALUES (?, ?, ?, 0, ?, ?, ?)
+            """,
+            (url_id, status_code, failure_reason, now, next_retry_at, now)
+        )
+
+async def get_urls_ready_for_retry(conn: aiosqlite.Connection, max_retries: int = 3) -> list[tuple[int, str]]:
+    """Get URLs that are ready for retry (next_retry_at <= now and retry_count < max_retries)."""
+    import time
+    
+    now = int(time.time())
+    cursor = await conn.execute(
+        """
+        SELECT fu.url_id, u.url 
+        FROM failed_urls fu
+        JOIN urls u ON fu.url_id = u.id
+        WHERE fu.next_retry_at <= ? AND fu.retry_count < ?
+        ORDER BY fu.next_retry_at ASC
+        """,
+        (now, max_retries)
+    )
+    return await cursor.fetchall()
+
+async def remove_failed_url(url_id: int, conn: aiosqlite.Connection):
+    """Remove a URL from the failed_urls table (when it succeeds)."""
+    await conn.execute("DELETE FROM failed_urls WHERE url_id = ?", (url_id,))
+
+async def get_retry_statistics(conn: aiosqlite.Connection) -> dict:
+    """Get comprehensive retry statistics."""
+    import time
+    stats = {}
+    
+    # Total failed URLs
+    cursor = await conn.execute("SELECT COUNT(*) FROM failed_urls")
+    stats['total_failed'] = (await cursor.fetchone())[0]
+    
+    # Failed URLs by status code
+    cursor = await conn.execute("SELECT status_code, COUNT(*) FROM failed_urls GROUP BY status_code ORDER BY status_code")
+    stats['by_status'] = dict(await cursor.fetchall())
+    
+    # Failed URLs by retry count
+    cursor = await conn.execute("SELECT retry_count, COUNT(*) FROM failed_urls GROUP BY retry_count ORDER BY retry_count")
+    stats['by_retry_count'] = dict(await cursor.fetchall())
+    
+    # URLs ready for retry
+    cursor = await conn.execute("SELECT COUNT(*) FROM failed_urls WHERE next_retry_at <= ?", (int(time.time()),))
+    stats['ready_for_retry'] = (await cursor.fetchone())[0]
+    
+    return stats
 
 async def batch_write_hreflang_sitemap_data(hreflang_data: List[Tuple[str, str, str]], crawl_db_path: str):
     """Write hreflang data from sitemaps to the normalized database structure."""

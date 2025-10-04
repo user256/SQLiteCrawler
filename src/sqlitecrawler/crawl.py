@@ -211,6 +211,19 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
             print("Shutdown requested. Saving progress and exiting gracefully...")
             break
             
+        # Check for URLs ready for retry first
+        from .db import get_urls_ready_for_retry
+        try:
+            async with aiosqlite.connect(crawl_db_path) as conn:
+                retry_urls = await get_urls_ready_for_retry(conn, http_config.max_retries)
+                if retry_urls:
+                    print(f"Found {len(retry_urls)} URLs ready for retry")
+                    # Add retry URLs back to frontier
+                    for url_id, url in retry_urls:
+                        await frontier_seed(url, base_domain, reset=False, db_path=crawl_db_path)
+        except Exception as e:
+            print(f"Error checking retry URLs: {e}")
+            
         # Determine batch size based on whether there's a limit
         if limits.max_pages > 0:
             remaining = limits.max_pages - processed
@@ -248,7 +261,6 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
             original_norm = normalize_url_for_storage(original)
             final_norm = normalize_url_for_storage(final_url or original)
             
-            to_mark_done.append(original_norm)
             # Look up depth and parent using the normalized URL (since frontier contains normalized URLs)
             depth = depths.get(original_norm, 0)
             parent_norm = parents.get(original_norm)
@@ -259,6 +271,55 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
             
             # Log status code and URL
             print(f"[{status}] {original_norm} -> {final_norm} (depth: {depth}, type: {k})")
+            
+            # Check if this status code should be retried
+            from .db import should_retry_status_code, record_failed_url, remove_failed_url, get_or_create_url_id
+            if should_retry_status_code(status):
+                # Record this URL for retry
+                try:
+                    url_id = await get_or_create_url_id(original_norm, base_domain, crawl_db_path)
+                    
+                    # Provide more descriptive failure reasons
+                    if status == 0:
+                        failure_reason = "Connection/timeout error"
+                    elif status == 408:
+                        failure_reason = "Request timeout (server slow)"
+                    elif status == 423:
+                        failure_reason = "Resource temporarily locked"
+                    elif status == 429:
+                        failure_reason = "Rate limited"
+                    elif status == 420:
+                        failure_reason = "Rate limited (Twitter)"
+                    elif status == 451:
+                        failure_reason = "Unavailable for legal reasons (geo-blocking?)"
+                    elif 500 <= status < 600:
+                        failure_reason = f"Server error {status}"
+                    else:
+                        failure_reason = f"HTTP {status}"
+                    
+                    async with aiosqlite.connect(crawl_db_path) as conn:
+                        await record_failed_url(url_id, status, failure_reason, 
+                                              conn, 
+                                              http_config.retry_delay, 
+                                              http_config.retry_backoff_factor)
+                    print(f"  -> Marked for retry (status: {status})")
+                except Exception as e:
+                    print(f"  -> Error recording failed URL: {e}")
+                
+                # Don't mark as done - leave in frontier for retry
+                continue
+            else:
+                # Success or permanent failure - mark as done
+                to_mark_done.append(original_norm)
+                
+                # If successful, remove from failed_urls table
+                if 200 <= status < 300:
+                    try:
+                        url_id = await get_or_create_url_id(original_norm, base_domain, crawl_db_path)
+                        async with aiosqlite.connect(crawl_db_path) as conn:
+                            await remove_failed_url(url_id, conn)
+                    except Exception as e:
+                        print(f"  -> Error removing from failed_urls: {e}")
             
             # Process redirect data if there was a redirect
             if redirect_chain_json and redirect_chain_json != "[]":
@@ -377,6 +438,39 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
 
     q, d = await frontier_stats(db_path=crawl_db_path)
     print(f"Frontier status — queued: {q}, done: {d}")
+    
+    # Report retry statistics
+    try:
+        from .db import get_retry_statistics
+        async with aiosqlite.connect(crawl_db_path) as conn:
+            stats = await get_retry_statistics(conn)
+            
+            if stats['total_failed'] > 0:
+                print(f"\nRetry Statistics:")
+                print(f"  Total failed URLs: {stats['total_failed']}")
+                print(f"  Ready for retry: {stats['ready_for_retry']}")
+                
+                if stats['by_status']:
+                    print(f"  By status code:")
+                    for status, count in stats['by_status'].items():
+                        status_name = {
+                            0: "Connection/timeout",
+                            408: "Request timeout", 
+                            423: "Resource locked",
+                            429: "Rate limited",
+                            420: "Rate limited (Twitter)",
+                            451: "Legal reasons",
+                        }.get(status, f"HTTP {status}")
+                        print(f"    {status} ({status_name}): {count} URLs")
+                
+                if stats['by_retry_count']:
+                    print(f"  By retry attempts:")
+                    for retry_count, count in stats['by_retry_count'].items():
+                        print(f"    {retry_count} attempts: {count} URLs")
+            else:
+                print(f"\nNo failed URLs requiring retry.")
+    except Exception as e:
+        print(f"Error reporting retry statistics: {e}")
     
     if shutdown_requested:
         print("Crawl paused. Run the same command again to resume from where you left off.")
