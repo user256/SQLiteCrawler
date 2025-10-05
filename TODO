@@ -2,11 +2,11 @@
 
 ## 🚀 HIGH PRIORITY - Core Features
 
-### Asset Crawling & Analysis
-* **Record assets** - option to record js/image/iframe/fonts and other linked assets  
-* **Fetch assets** - option to record & crawl js/image/iframe/fonts and other linked assets  
-* **Caching analysis** - report on caching / assets with no cache / cache busting  
-* **Performance hints** - evaluate preconnect/preload/prefetch for speed improvements  
+### Robust Fetching
+* **HTTP/2 & Brotli support**  
+* **Content-type sniffing** & charset detection  
+* **Meta refresh & JS redirects detection**  
+* **Retry/backoff tuning by failure type**  
 
 ### Advanced Crawling Features
 * **CSV crawl support** - crawl from csv (restricted && seed)  
@@ -14,6 +14,12 @@
 * **Header rotation** - enable rotating headers  
 * **Custom extraction** - CSS Path, XPath, regex data extraction  
 * **Crawl comparison** - enable comparison between crawls (including staging, URL remapping)  
+
+### Asset Crawling & Analysis
+* **Record assets** - option to record js/image/iframe/fonts and other linked assets  
+* **Fetch assets** - option to record & crawl js/image/iframe/fonts and other linked assets  
+* **Caching analysis** - report on caching / assets with no cache / cache busting  
+* **Performance hints** - evaluate preconnect/preload/prefetch for speed improvements  
 
 ### Authentication & Security
 * ✅ **Authenticated crawling** - support basic/digest auth for staging sites  
@@ -27,12 +33,6 @@
 * **Respect crawl-delay and robots TTL caching**  
 * **Frontier scoring**: prioritize by depth, sitemap priority, inlinks, etc.  
 * **URL normalization hardening**: punycode, default ports, param sorting, UTM stripping  
-
-### Robust Fetching
-* **HTTP/2 & Brotli support**  
-* **Content-type sniffing** & charset detection  
-* **Meta refresh & JS redirects detection**  
-* **Retry/backoff tuning by failure type**  
 
 ### Data Model & Storage
 * **Content hashing** (SHA256) + **SimHash/MinHash** near-duplicate detection  

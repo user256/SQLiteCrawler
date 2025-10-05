@@ -1,4 +1,4 @@
-import argparse, asyncio, os
+import argparse, asyncio, os, sys
 from src.sqlitecrawler.crawl import crawl
 from src.sqlitecrawler.config import CrawlLimits, HttpConfig, get_user_agent
 
@@ -72,6 +72,12 @@ Examples:
                    help="Authentication type: basic or digest (default: basic)")
     p.add_argument("--auth-domain", type=str, default="",
                    help="Restrict authentication to specific domain (optional)")
+    
+    # HTTP/2 and compression
+    p.add_argument("--no-http2", action="store_true",
+                   help="Disable HTTP/2 support (use HTTP/1.1)")
+    p.add_argument("--no-brotli", action="store_true",
+                   help="Disable Brotli compression support")
     
     # CSV crawl support
     p.add_argument("--csv-file", type=str, default="",
@@ -174,6 +180,8 @@ Examples:
         ignore_robots_crawlability=args.ignore_robots,
         skip_robots_sitemaps=args.skip_robots_sitemaps,
         skip_sitemaps=args.skip_sitemaps,
+        enable_http2=not args.no_http2,
+        enable_brotli=not args.no_brotli,
         max_retries=args.max_retries,
         retry_delay=args.retry_delay,
         retry_backoff_factor=args.retry_backoff,
@@ -199,6 +207,8 @@ Examples:
         print(f"  Ignore robots for crawlability: {http_config.ignore_robots_crawlability}")
         print(f"  Skip robots.txt sitemaps: {http_config.skip_robots_sitemaps}")
         print(f"  Skip sitemaps: {http_config.skip_sitemaps}")
+        print(f"  HTTP/2 Support: {http_config.enable_http2}")
+        print(f"  Brotli Compression: {http_config.enable_brotli}")
         print(f"  Allow external URLs: {args.allow_external}")
         print(f"  Max workers: {args.max_workers}")
         if auth_config:

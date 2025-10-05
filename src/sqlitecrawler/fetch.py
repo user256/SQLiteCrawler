@@ -5,6 +5,7 @@ import json
 from typing import Dict, Tuple, List
 from urllib.parse import urlparse
 from .config import HttpConfig, AuthConfig
+from .http_client import fetch as http2_fetch, fetch_with_redirect_tracking as http2_fetch_with_redirect_tracking, fetch_batch as http2_fetch_batch
 
 def _should_use_auth(url: str, auth: AuthConfig) -> bool:
     """Check if authentication should be used for this URL."""
@@ -29,6 +30,12 @@ def _create_auth(auth: AuthConfig) -> aiohttp.BasicAuth:
 
 async def fetch(url: str, cfg: HttpConfig) -> Tuple[int, str, Dict[str, str], str, str]:
     """Return (status, final_url, headers, text, url) for a single request."""
+    
+    # Use HTTP/2 client if enabled
+    if cfg.enable_http2:
+        return await http2_fetch(url, cfg)
+    
+    # Fallback to aiohttp
     timeout = aiohttp.ClientTimeout(total=cfg.timeout)
     
     # Prepare authentication if needed
@@ -46,6 +53,12 @@ async def fetch(url: str, cfg: HttpConfig) -> Tuple[int, str, Dict[str, str], st
 
 async def fetch_with_redirect_tracking(url: str, cfg: HttpConfig) -> Tuple[int, str, Dict[str, str], str, str, str]:
     """Return (status, final_url, headers, text, url, redirect_chain_json) for a single request with redirect tracking."""
+    
+    # Use HTTP/2 client if enabled
+    if cfg.enable_http2:
+        return await http2_fetch_with_redirect_tracking(url, cfg)
+    
+    # Fallback to aiohttp
     timeout = aiohttp.ClientTimeout(total=cfg.timeout)
     redirect_chain = []
     

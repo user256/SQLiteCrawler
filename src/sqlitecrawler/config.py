@@ -25,6 +25,9 @@ class HttpConfig:
     ignore_robots_crawlability: bool = False
     skip_robots_sitemaps: bool = False
     skip_sitemaps: bool = False
+    # HTTP/2 and compression configuration
+    enable_http2: bool = os.getenv("SQLITECRAWLER_HTTP2", "1") == "1"
+    enable_brotli: bool = os.getenv("SQLITECRAWLER_BROTLI", "1") == "1"
     # Retry configuration
     max_retries: int = int(os.getenv("SQLITECRAWLER_MAX_RETRIES", "3"))
     retry_delay: float = float(os.getenv("SQLITECRAWLER_RETRY_DELAY", "1.0"))

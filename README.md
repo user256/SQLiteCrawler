@@ -13,6 +13,7 @@ A high-performance, persistent web crawler built with Python and SQLite. Feature
 - **Schema.org Extraction**: Extracts and validates JSON-LD, microdata, and RDFa structured data
 - **Hreflang Support**: Extracts and normalizes hreflang data from sitemaps
 - **CSV Crawl Support**: Crawl from predefined URL lists with restricted or seed modes
+- **HTTP/2 & Brotli Support**: Modern HTTP/2 client with Brotli compression for improved performance
 - **Database Normalization**: Efficient storage with URL IDs and compressed content
 - **Async Performance**: Concurrent requests with configurable limits
 - **Flexible Configuration**: Multiple user agents, timeout settings, and crawl limits
@@ -55,6 +56,12 @@ python main.py https://example.com/ --max-pages 200
 
 # Crawl with HTTP authentication (for staging sites)
 python main.py https://staging.example.com/ --auth-username myuser --auth-password mypass
+
+# Disable HTTP/2 (use HTTP/1.1)
+python main.py https://example.com/ --no-http2
+
+# Disable Brotli compression
+python main.py https://example.com/ --no-brotli
 ```
 
 ### CSV Crawl Support

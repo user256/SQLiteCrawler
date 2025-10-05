@@ -10,6 +10,8 @@ authors = [{name = "You"}]
 requires-python = ">=3.9"
 dependencies = [
   "aiohttp>=3.9",
+  "httpx[http2]>=0.25",
+  "brotli>=1.1",
   "aiosqlite>=0.20",
   "beautifulsoup4>=4.12",
   "lxml>=5.2",
