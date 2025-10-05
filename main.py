@@ -97,6 +97,10 @@ Examples:
     p.add_argument("--delay-decrease", type=float, default=None,
                    help="Factor to decrease delay on success (default: 0.9)")
     
+    # Conditional requests
+    p.add_argument("--no-conditional-requests", action="store_true",
+                   help="Disable conditional requests (ETag/If-Modified-Since)")
+    
     # CSV crawl support
     p.add_argument("--csv-file", type=str, default="",
                    help="CSV file containing URLs to crawl (one URL per line or column)")
@@ -223,6 +227,7 @@ Examples:
         max_delay=args.max_delay if args.max_delay is not None else HttpConfig().max_delay,
         delay_increase_factor=args.delay_increase if args.delay_increase is not None else HttpConfig().delay_increase_factor,
         delay_decrease_factor=args.delay_decrease if args.delay_decrease is not None else HttpConfig().delay_decrease_factor,
+        enable_conditional_requests=not args.no_conditional_requests,
         auth=auth_config,
     )
     
@@ -253,6 +258,7 @@ Examples:
             print(f"  Max Delay: {http_config.max_delay}s")
             print(f"  Delay Increase Factor: {http_config.delay_increase_factor}x")
             print(f"  Delay Decrease Factor: {http_config.delay_decrease_factor}x")
+        print(f"  Conditional Requests: {http_config.enable_conditional_requests}")
         print(f"  Allow external URLs: {args.allow_external}")
         print(f"  Max workers: {args.max_workers}")
         if auth_config:

@@ -129,8 +129,8 @@ class HostDelayTracker:
             new_delay = min(current_delay * self.http_config.delay_increase_factor, self.http_config.max_delay)
             self.host_delays[host] = new_delay
             print(f"  -> Increased delay for {host} to {new_delay:.2f}s (status: {status_code})")
-        elif status_code == 200 and current_delay > self.http_config.delay_between_requests:
-            # Decrease delay gradually for successful responses
+        elif status_code in [200, 304] and current_delay > self.http_config.delay_between_requests:
+            # Decrease delay gradually for successful responses (200 OK or 304 Not Modified)
             new_delay = max(current_delay * self.http_config.delay_decrease_factor, self.http_config.delay_between_requests)
             self.host_delays[host] = new_delay
             if new_delay != current_delay:
@@ -168,8 +168,8 @@ class HostDelayTracker:
             }
         return stats
 
-async def fetch_with_delay(url: str, cfg: HttpConfig, delay_tracker: HostDelayTracker) -> Tuple[int, str, Dict[str, str], str, str, str]:
-    """Fetch a single URL with adaptive delay based on host response history."""
+async def fetch_with_delay(url: str, cfg: HttpConfig, delay_tracker: HostDelayTracker, base_domain: str = None, pages_db_path: str = None, crawl_db_path: str = None) -> Tuple[int, str, Dict[str, str], str, str, str]:
+    """Fetch a single URL with adaptive delay and conditional requests."""
     from urllib.parse import urlparse
     
     # Extract host for delay tracking
@@ -178,9 +178,19 @@ async def fetch_with_delay(url: str, cfg: HttpConfig, delay_tracker: HostDelayTr
     # Wait for appropriate delay before making request
     await delay_tracker.wait_for_host(host)
     
+    # Get conditional headers if this is a re-crawl and conditional requests are enabled
+    conditional_headers = {}
+    if base_domain and cfg.enable_conditional_requests and pages_db_path and crawl_db_path:
+        from .db import get_conditional_headers
+        etag, last_modified = await get_conditional_headers(url, base_domain, pages_db_path, crawl_db_path)
+        if etag:
+            conditional_headers["If-None-Match"] = f'"{etag}"'
+        if last_modified:
+            conditional_headers["If-Modified-Since"] = last_modified
+    
     # Make the request
     start_time = time.time()
-    result = await fetch_with_redirect_tracking(url, cfg)
+    result = await fetch_with_redirect_tracking(url, cfg, conditional_headers)
     response_time = time.time() - start_time
     
     # Update delay based on response
@@ -189,14 +199,14 @@ async def fetch_with_delay(url: str, cfg: HttpConfig, delay_tracker: HostDelayTr
     
     return result
 
-async def fetch_many_with_delay(urls: List[str], cfg: HttpConfig, delay_tracker: HostDelayTracker) -> List[Tuple[int, str, Dict[str, str], str, str, str]]:
+async def fetch_many_with_delay(urls: List[str], cfg: HttpConfig, delay_tracker: HostDelayTracker, base_domain: str = None, pages_db_path: str = None, crawl_db_path: str = None) -> List[Tuple[int, str, Dict[str, str], str, str, str]]:
     """Fetch multiple URLs with adaptive delay, processing them sequentially to respect delays."""
     results = []
     
     for url in urls:
         if shutdown_requested:
             break
-        result = await fetch_with_delay(url, cfg, delay_tracker)
+        result = await fetch_with_delay(url, cfg, delay_tracker, base_domain, pages_db_path, crawl_db_path)
         results.append(result)
     
     return results
@@ -414,7 +424,7 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
         # The frontier contains normalized URLs, but we need to fetch them
         # We'll use the normalized URLs directly since they should work for fetching
         # Use redirect tracking to capture redirect chains with adaptive delay
-        results = await fetch_many_with_delay(urls, cfg, delay_tracker)
+        results = await fetch_many_with_delay(urls, cfg, delay_tracker, base_domain, pages_db_path, crawl_db_path)
 
         to_mark_done = []
         to_enqueue = []
@@ -433,13 +443,22 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
             # Look up depth and parent using the normalized URL (since frontier contains normalized URLs)
             depth = depths.get(original_norm, 0)
             parent_norm = parents.get(original_norm)
-            k = classify(headers.get("Content-Type"), final_norm)
+            
+            # Classify content type using original headers (before normalization)
+            # Headers are already lowercase from the HTTP client
+            k = classify(headers.get("content-type"), final_norm)
             
             # Normalize headers to save space
             headers_norm = normalize_headers(headers)
             
             # Log status code and URL
             print(f"[{status}] {original_norm} -> {final_norm} (depth: {depth}, type: {k})")
+            
+            # Handle 304 Not Modified - content hasn't changed, skip processing
+            if status == 304:
+                print(f"  -> Content not modified (304), skipping processing")
+                to_mark_done.append(original_norm)
+                continue
             
             # Check if this status code should be retried
             from .db import should_retry_status_code, record_failed_url, remove_failed_url, get_or_create_url_id

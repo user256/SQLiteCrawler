@@ -4,8 +4,9 @@
 
 ### Crawl Quality & Politeness
 * ✅ **Adaptive politeness per host**: dynamic rate limiting based on latency and 429/503s  
-* **Conditional requests**: ETag / If-Modified-Since handling  
+* ✅ **Conditional requests**: ETag / If-Modified-Since handling  
 * **Respect crawl-delay and robots TTL caching**  
+* **sitemap TTL caching / sitemap freshness policy**  
 * **Frontier scoring**: prioritize by depth, sitemap priority, inlinks, etc.  
 * **URL normalization hardening**: punycode, default ports, param sorting, UTM stripping  
 

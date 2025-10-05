@@ -77,7 +77,7 @@ def _decompress_content(content: bytes, encoding: str) -> bytes:
         return content
 
 
-async def fetch(url: str, cfg: HttpConfig) -> Tuple[int, str, Dict[str, str], str, str]:
+async def fetch(url: str, cfg: HttpConfig, conditional_headers: Dict[str, str] = None) -> Tuple[int, str, Dict[str, str], str, str]:
     """Return (status, final_url, headers, text, url) for a single request with HTTP/2 and Brotli support."""
     
     # Prepare authentication if needed
@@ -91,6 +91,10 @@ async def fetch(url: str, cfg: HttpConfig) -> Tuple[int, str, Dict[str, str], st
         **_get_compression_headers(),
         **_get_auth_headers(cfg.auth)
     }
+    
+    # Add conditional headers if provided
+    if conditional_headers:
+        headers.update(conditional_headers)
     
     # Create HTTP/2 client with timeout
     timeout = httpx.Timeout(cfg.timeout)
@@ -127,7 +131,7 @@ async def fetch(url: str, cfg: HttpConfig) -> Tuple[int, str, Dict[str, str], st
             return 0, url, {}, "", url
 
 
-async def fetch_with_redirect_tracking(url: str, cfg: HttpConfig) -> Tuple[int, str, Dict[str, str], str, str, str]:
+async def fetch_with_redirect_tracking(url: str, cfg: HttpConfig, conditional_headers: Dict[str, str] = None) -> Tuple[int, str, Dict[str, str], str, str, str]:
     """Return (status, final_url, headers, text, url, redirect_chain_json) for a single request with redirect tracking."""
     
     # Prepare authentication if needed
@@ -141,6 +145,10 @@ async def fetch_with_redirect_tracking(url: str, cfg: HttpConfig) -> Tuple[int, 
         **_get_compression_headers(),
         **_get_auth_headers(cfg.auth)
     }
+    
+    # Add conditional headers if provided
+    if conditional_headers:
+        headers.update(conditional_headers)
     
     # Create HTTP/2 client with timeout
     timeout = httpx.Timeout(cfg.timeout)

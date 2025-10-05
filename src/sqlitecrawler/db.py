@@ -192,6 +192,8 @@ CREATE TABLE IF NOT EXISTS pages (
   fetched_at INTEGER,
   headers_json TEXT,
   html_compressed BLOB,
+  etag TEXT,
+  last_modified TEXT,
   FOREIGN KEY (url_id) REFERENCES urls (id),
   FOREIGN KEY (final_url_id) REFERENCES urls (id),
   UNIQUE(url_id)
@@ -768,6 +770,25 @@ async def get_url_by_id(url_id: int, db_path: str = CRAWL_DB_PATH) -> str | None
         row = await cursor.fetchone()
         return row[0] if row else None
 
+async def get_conditional_headers(url: str, base_domain: str, pages_db_path: str = PAGES_DB_PATH, crawl_db_path: str = CRAWL_DB_PATH) -> tuple[str | None, str | None]:
+    """Get ETag and Last-Modified headers for a URL from previous crawl."""
+    try:
+        # Get URL ID
+        url_id = await get_or_create_url_id(url, base_domain, crawl_db_path)
+        
+        async with aiosqlite.connect(pages_db_path) as db:
+            cursor = await db.execute(
+                "SELECT etag, last_modified FROM pages WHERE url_id = ? AND etag IS NOT NULL AND last_modified IS NOT NULL",
+                (url_id,)
+            )
+            row = await cursor.fetchone()
+            if row:
+                return row[0], row[1]  # etag, last_modified
+    except Exception:
+        pass  # Return None, None if any error occurs
+    
+    return None, None
+
 # ------------------ writers ------------------
 
 async def write_page(url: str, final_url: str, status: int, headers: dict, html: str, base_domain: str, pages_db_path: str = PAGES_DB_PATH, crawl_db_path: str = CRAWL_DB_PATH):
@@ -777,19 +798,25 @@ async def write_page(url: str, final_url: str, status: int, headers: dict, html:
     url_id = await get_or_create_url_id(url, base_domain, crawl_db_path)
     final_url_id = await get_or_create_url_id(final_url, base_domain, crawl_db_path) if final_url != url else url_id
     
+    # Extract ETag and Last-Modified from headers
+    etag = headers.get('etag', '').strip('"') if headers.get('etag') else None
+    last_modified = headers.get('last-modified', '').strip() if headers.get('last-modified') else None
+    
     async with aiosqlite.connect(pages_db_path) as db:
         await db.execute(
             """
-        INSERT INTO pages(url_id, final_url_id, status, fetched_at, headers_json, html_compressed)
-        VALUES (?,?,?,?,?,?)
+        INSERT INTO pages(url_id, final_url_id, status, fetched_at, headers_json, html_compressed, etag, last_modified)
+        VALUES (?,?,?,?,?,?,?,?)
         ON CONFLICT(url_id) DO UPDATE SET
           final_url_id=excluded.final_url_id,
           status=excluded.status,
           fetched_at=excluded.fetched_at,
           headers_json=excluded.headers_json,
-          html_compressed=excluded.html_compressed
+          html_compressed=excluded.html_compressed,
+          etag=excluded.etag,
+          last_modified=excluded.last_modified
         """,
-            (url_id, final_url_id, status, now, json.dumps(headers, ensure_ascii=False), compress_html(html)),
+            (url_id, final_url_id, status, now, json.dumps(headers, ensure_ascii=False), compress_html(html), etag, last_modified),
         )
         await db.commit()
 
@@ -842,22 +869,28 @@ async def _batch_write_pages_chunk(pages_data: List[Tuple[str, str, int, dict, s
             url_id = await get_or_create_url_id_with_conn(url, base_domain, crawl_db_path, crawl_conn)
             final_url_id = await get_or_create_url_id_with_conn(final_url, base_domain, crawl_db_path, crawl_conn) if final_url != url else url_id
             
+            # Extract ETag and Last-Modified from headers
+            etag = headers.get('etag', '').strip('"') if headers.get('etag') else None
+            last_modified = headers.get('last-modified', '').strip() if headers.get('last-modified') else None
+            
             batch_data.append((
                 url_id, final_url_id, status, int(time.time()),
-                json.dumps(headers, ensure_ascii=False), compress_html(html)
+                json.dumps(headers, ensure_ascii=False), compress_html(html), etag, last_modified
             ))
         
         # Batch insert
         await pages_conn.executemany(
             """
-            INSERT INTO pages(url_id, final_url_id, status, fetched_at, headers_json, html_compressed)
-            VALUES (?,?,?,?,?,?)
+            INSERT INTO pages(url_id, final_url_id, status, fetched_at, headers_json, html_compressed, etag, last_modified)
+            VALUES (?,?,?,?,?,?,?,?)
             ON CONFLICT(url_id) DO UPDATE SET
               final_url_id=excluded.final_url_id,
               status=excluded.status,
               fetched_at=excluded.fetched_at,
               headers_json=excluded.headers_json,
-              html_compressed=excluded.html_compressed
+              html_compressed=excluded.html_compressed,
+              etag=excluded.etag,
+              last_modified=excluded.last_modified
             """,
             batch_data
         )

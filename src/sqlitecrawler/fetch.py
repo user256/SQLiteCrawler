@@ -51,12 +51,12 @@ def _get_auth_headers(auth: AuthConfig) -> Dict[str, str]:
     
     return headers
 
-async def fetch(url: str, cfg: HttpConfig) -> Tuple[int, str, Dict[str, str], str, str]:
+async def fetch(url: str, cfg: HttpConfig, conditional_headers: Dict[str, str] = None) -> Tuple[int, str, Dict[str, str], str, str]:
     """Return (status, final_url, headers, text, url) for a single request."""
     
     # Use HTTP/2 client if enabled
     if cfg.enable_http2:
-        return await http2_fetch(url, cfg)
+        return await http2_fetch(url, cfg, conditional_headers)
     
     # Fallback to aiohttp
     timeout = aiohttp.ClientTimeout(total=cfg.timeout)
@@ -72,6 +72,10 @@ async def fetch(url: str, cfg: HttpConfig) -> Tuple[int, str, Dict[str, str], st
         **_get_auth_headers(cfg.auth)
     }
     
+    # Add conditional headers if provided
+    if conditional_headers:
+        headers.update(conditional_headers)
+    
     async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
         try:
             async with session.get(url, allow_redirects=True, auth=auth) as resp:
@@ -80,12 +84,12 @@ async def fetch(url: str, cfg: HttpConfig) -> Tuple[int, str, Dict[str, str], st
         except Exception:
             return 0, url, {}, "", url
 
-async def fetch_with_redirect_tracking(url: str, cfg: HttpConfig) -> Tuple[int, str, Dict[str, str], str, str, str]:
+async def fetch_with_redirect_tracking(url: str, cfg: HttpConfig, conditional_headers: Dict[str, str] = None) -> Tuple[int, str, Dict[str, str], str, str, str]:
     """Return (status, final_url, headers, text, url, redirect_chain_json) for a single request with redirect tracking."""
     
     # Use HTTP/2 client if enabled
     if cfg.enable_http2:
-        return await http2_fetch_with_redirect_tracking(url, cfg)
+        return await http2_fetch_with_redirect_tracking(url, cfg, conditional_headers)
     
     # Fallback to aiohttp
     timeout = aiohttp.ClientTimeout(total=cfg.timeout)
@@ -96,7 +100,12 @@ async def fetch_with_redirect_tracking(url: str, cfg: HttpConfig) -> Tuple[int, 
     if _should_use_auth(url, cfg.auth):
         auth = _create_auth(cfg.auth)
     
-    async with aiohttp.ClientSession(headers={"User-Agent": cfg.user_agent}, timeout=timeout) as session:
+    # Prepare headers
+    headers = {"User-Agent": cfg.user_agent}
+    if conditional_headers:
+        headers.update(conditional_headers)
+    
+    async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
         try:
             current_url = url
             max_redirects = 10  # Prevent infinite redirects

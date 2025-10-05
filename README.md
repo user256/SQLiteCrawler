@@ -145,8 +145,30 @@ python main.py https://example.com/ --no-adaptive-delay
 **Response-Based Adjustments:**
 - **429/503/502/504**: Increase delay by 2x the increase factor
 - **408/423/420/451**: Increase delay by the increase factor  
-- **200 responses**: Gradually decrease delay back to base rate
+- **200/304 responses**: Gradually decrease delay back to base rate
 - **Per-host tracking**: Each domain has independent delay settings
+
+### Conditional Requests & Efficiency
+
+SQLiteCrawler implements HTTP conditional requests to avoid re-downloading unchanged content:
+
+**Automatic ETag & Last-Modified Support:**
+- Stores ETag and Last-Modified headers from previous responses
+- Automatically sends `If-None-Match` and `If-Modified-Since` headers on re-crawls
+- Handles 304 Not Modified responses efficiently (skips content processing)
+- Reduces bandwidth usage and improves crawl speed
+
+**Configuration Options:**
+```bash
+# Disable conditional requests (download all content)
+python main.py https://example.com/ --no-conditional-requests
+```
+
+**Benefits:**
+- **Bandwidth savings**: Skip unchanged content
+- **Faster crawls**: Reduce processing time for unchanged pages
+- **Server-friendly**: Respects HTTP caching semantics
+- **Automatic**: No configuration required, works out of the box
 
 ### CSV Crawl Support
 

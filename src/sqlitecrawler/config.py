@@ -42,6 +42,8 @@ class HttpConfig:
     max_delay: float = float(os.getenv("SQLITECRAWLER_MAX_DELAY", "10.0"))
     delay_increase_factor: float = float(os.getenv("SQLITECRAWLER_DELAY_INCREASE", "1.5"))
     delay_decrease_factor: float = float(os.getenv("SQLITECRAWLER_DELAY_DECREASE", "0.9"))
+    # Conditional requests configuration
+    enable_conditional_requests: bool = os.getenv("SQLITECRAWLER_CONDITIONAL_REQUESTS", "1") == "1"
     # Authentication configuration
     auth: AuthConfig = None
 
