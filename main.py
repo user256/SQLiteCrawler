@@ -1,4 +1,4 @@
-import argparse, asyncio
+import argparse, asyncio, os
 from src.sqlitecrawler.crawl import crawl
 from src.sqlitecrawler.config import CrawlLimits, HttpConfig, get_user_agent
 
@@ -17,7 +17,7 @@ Examples:
     )
     
     # Required arguments
-    p.add_argument("start", help="Start URL or XML sitemap to begin crawling")
+    p.add_argument("start", nargs='?', help="Start URL or XML sitemap to begin crawling (optional when using --csv-file)")
     
     # Crawling behavior
     p.add_argument("--js", action="store_true", 
@@ -73,6 +73,14 @@ Examples:
     p.add_argument("--auth-domain", type=str, default="",
                    help="Restrict authentication to specific domain (optional)")
     
+    # CSV crawl support
+    p.add_argument("--csv-file", type=str, default="",
+                   help="CSV file containing URLs to crawl (one URL per line or column)")
+    p.add_argument("--csv-seed", action="store_true",
+                   help="Treat CSV URLs as seed URLs - also crawl sitemaps, robots.txt, and follow internal links")
+    p.add_argument("--csv-column", type=str, default="url",
+                   help="Column name containing URLs in CSV file (default: 'url')")
+    
     # Output and logging
     p.add_argument("--verbose", "-v", action="store_true", 
                    help="Enable verbose output")
@@ -80,6 +88,18 @@ Examples:
                    help="Suppress non-error output")
     
     args = p.parse_args()
+
+    # Validate CSV arguments
+    if args.csv_file and not os.path.exists(args.csv_file):
+        print(f"Error: CSV file not found: {args.csv_file}")
+        sys.exit(1)
+    
+    if args.csv_file and not args.start:
+        # CSV mode - start URL argument is optional
+        pass
+    elif not args.csv_file and not args.start:
+        print("Error: Either start URL or --csv-file must be specified")
+        sys.exit(1)
 
     # If skip-sitemaps is enabled, automatically enable skip-robots-sitemaps
     if args.skip_sitemaps:
@@ -105,6 +125,45 @@ Examples:
             auth_type=args.auth_type,
             domain=args.auth_domain
         )
+    
+    # Process CSV file if provided
+    csv_urls = []
+    if args.csv_file:
+        try:
+            import csv
+            with open(args.csv_file, 'r', newline='', encoding='utf-8') as csvfile:
+                # Try to detect if it's a proper CSV with headers
+                sample = csvfile.read(1024)
+                csvfile.seek(0)
+                
+                # Check if the first line looks like headers
+                has_headers = ',' in sample and any(char.isalpha() for char in sample.split('\n')[0])
+                
+                if has_headers:
+                    reader = csv.DictReader(csvfile)
+                    for row in reader:
+                        if args.csv_column in row and row[args.csv_column]:
+                            csv_urls.append(row[args.csv_column].strip())
+                else:
+                    # Treat as simple list of URLs, one per line
+                    for line in csvfile:
+                        url = line.strip()
+                        if url and not url.startswith('#'):  # Skip empty lines and comments
+                            csv_urls.append(url)
+            
+            if not csv_urls:
+                print(f"Error: No URLs found in CSV file: {args.csv_file}")
+                sys.exit(1)
+                
+            print(f"Loaded {len(csv_urls)} URLs from CSV file: {args.csv_file}")
+            if args.csv_seed:
+                print("CSV seed mode: Will also crawl sitemaps, robots.txt, and follow internal links")
+            else:
+                print("CSV restricted mode: Will only crawl URLs from the CSV file")
+                
+        except Exception as e:
+            print(f"Error reading CSV file: {e}")
+            sys.exit(1)
     
     http_config = HttpConfig(
         user_agent=user_agent,
@@ -150,4 +209,10 @@ Examples:
             print(f"  Authentication: None")
         print()
 
-    asyncio.run(crawl(args.start, use_js=args.js, limits=limits, reset_frontier=args.reset_frontier, http_config=http_config, allow_external=args.allow_external, max_workers=args.max_workers, verbose=args.verbose))
+    # Use first CSV URL as start URL if no start URL provided
+    start_url = args.start
+    if not start_url and csv_urls:
+        start_url = csv_urls[0]
+        print(f"Using first CSV URL as start URL: {start_url}")
+    
+    asyncio.run(crawl(start_url, use_js=args.js, limits=limits, reset_frontier=args.reset_frontier, http_config=http_config, allow_external=args.allow_external, max_workers=args.max_workers, verbose=args.verbose, csv_urls=csv_urls, csv_seed_mode=args.csv_seed))

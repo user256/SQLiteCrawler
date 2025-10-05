@@ -60,10 +60,14 @@ def normalize_headers(headers: dict) -> dict:
             normalized[key_lower] = str(value).strip()
     return normalized
 
-def should_crawl_url(url: str, base_domain: str, allow_external: bool, is_from_sitemap: bool = False, user_agent: str = "SQLiteCrawler/0.2") -> bool:
+def should_crawl_url(url: str, base_domain: str, allow_external: bool, is_from_sitemap: bool = False, user_agent: str = "SQLiteCrawler/0.2", csv_urls: list = None, csv_seed_mode: bool = False) -> bool:
     """Determine if a URL should be crawled based on classification and settings."""
     from .db import classify_url
     from .robots import is_url_crawlable
+    
+    # In CSV restricted mode, only crawl URLs that are in the CSV list
+    if csv_urls and not csv_seed_mode:
+        return url in csv_urls
     
     classification = classify_url(url, base_domain, is_from_sitemap)
     
@@ -95,12 +99,13 @@ def signal_handler(signum, frame):
     print("Press Ctrl+C again to force quit.")
     shutdown_requested = True
 
-async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = None, reset_frontier: bool = False, http_config: HttpConfig | None = None, allow_external: bool = False, max_workers: int = 4, verbose: bool = False):
+async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = None, reset_frontier: bool = False, http_config: HttpConfig | None = None, allow_external: bool = False, max_workers: int = 4, verbose: bool = False, csv_urls: list = None, csv_seed_mode: bool = False):
     """Persistent breadth-first crawl with pause/resume.
     - Seeds the frontier if empty (or `reset_frontier=True`).
     - Respects `limits.max_pages`, `limits.max_depth`, and `limits.same_host_only`.
     - Stores pages in website-specific pages.db and discovered URLs/types in website-specific crawl.db.
     - Supports graceful shutdown with Ctrl+C (SIGINT) or SIGTERM.
+    - Supports CSV crawl mode: restricted list or seed mode.
     """
     global shutdown_requested
     
@@ -124,10 +129,16 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
     await init_crawl_db(crawl_db_path)
 
     # Skip sitemap discovery if requested
+    # Initialize sitemap variables
+    sitemap_urls = []
+    sitemap_urls_dict = {}
+    url_to_sitemap_mapping = {}
+    
+    # Skip sitemap discovery if explicitly disabled or in CSV restricted mode
     if http_config.skip_sitemaps:
         print("Skipping sitemap discovery (--skip-sitemaps enabled)")
-        sitemap_urls = []
-        sitemap_urls_dict = {}
+    elif csv_urls and not csv_seed_mode:
+        print("Skipping sitemap discovery (CSV restricted mode)")
     else:
         # Parse robots.txt for sitemap discovery (unless skipped)
         if not http_config.skip_robots_sitemaps:
@@ -141,9 +152,6 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
         if sitemap_urls:
             print("Crawling sitemaps to discover URLs...")
             sitemap_urls_dict, url_to_sitemap_mapping = await crawl_sitemaps_recursive(sitemap_urls, http_config.user_agent, verbose=verbose, http_config=http_config)
-        else:
-            sitemap_urls_dict = {}
-            url_to_sitemap_mapping = {}
     
     if sitemap_urls:
         print(f"Found {len(sitemap_urls)} sitemap(s): {sitemap_urls}")
@@ -152,6 +160,50 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
     print(f"Adding start URL to frontier: {start}")
     start_norm = normalize_url_for_storage(start)
     await frontier_seed(start_norm, base_domain, reset=reset_frontier, db_path=crawl_db_path)
+    
+    # Process CSV URLs if provided
+    if csv_urls:
+        print(f"Processing {len(csv_urls)} URLs from CSV file...")
+        csv_urls_added = 0
+        csv_urls_normalized = []  # Store normalized URLs for comparison
+        
+        for csv_url in csv_urls:
+            try:
+                # Normalize and validate the URL
+                csv_url_norm = normalize_url_for_storage(csv_url)
+                csv_urls_normalized.append(csv_url_norm)  # Add to normalized list
+                
+                # In restricted mode, only add URLs that match the base domain
+                if not csv_seed_mode:
+                    from urllib.parse import urlparse
+                    csv_domain = urlparse(csv_url_norm).netloc
+                    if csv_domain != base_domain:
+                        if verbose:
+                            print(f"  Skipping external URL in restricted mode: {csv_url_norm}")
+                        continue
+                
+                # Add to frontier
+                await frontier_seed(csv_url_norm, base_domain, reset=False, db_path=crawl_db_path)
+                csv_urls_added += 1
+                
+                if verbose:
+                    print(f"  Added CSV URL: {csv_url_norm}")
+                    
+            except Exception as e:
+                print(f"  Error processing CSV URL {csv_url}: {e}")
+                continue
+        
+        print(f"Added {csv_urls_added} URLs from CSV to frontier")
+        
+        # Replace csv_urls with normalized versions for should_crawl_url comparisons
+        csv_urls = csv_urls_normalized
+        
+        # In restricted mode, skip sitemap discovery and internal link following
+        if not csv_seed_mode:
+            print("CSV restricted mode: Skipping sitemap discovery and internal link following")
+            # Set flags to skip sitemap processing
+            sitemap_urls_dict = {}
+            url_to_sitemap_mapping = {}
 
     if sitemap_urls_dict:
         print(f"Discovered {len(sitemap_urls_dict)} URLs from sitemaps")
@@ -354,7 +406,7 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
                         child_norm = normalize_url_for_storage(child)
                         
                         # Check if URL should be crawled based on classification
-                        if should_crawl_url(child_norm, base_domain, allow_external, is_from_sitemap=True):
+                        if should_crawl_url(child_norm, base_domain, allow_external, is_from_sitemap=True, user_agent=http_config.user_agent, csv_urls=csv_urls, csv_seed_mode=csv_seed_mode):
                             children_to_enqueue.append((child_norm, depth + 1, original_norm, base_domain))
                             print(f"  -> Enqueued from sitemap: {child_norm}")
                         else:
@@ -374,7 +426,7 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
                         # We'll need the URL ID, so we'll add this to content_to_write with a placeholder
                         # The actual URL ID will be resolved during batch processing
                         content_to_write.append((original_norm, content_data, base_domain))
-                if depth < limits.max_depth and text:
+                if text:
                     # Extract links with metadata for internal links tracking
                     links, detailed_links = extract_links_with_metadata(text, final_norm)
                     print(f"  -> Found {len(links)} links in HTML")
@@ -383,15 +435,25 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
                     if detailed_links:
                         links_to_write.append((original_norm, detailed_links, base_domain))
                     
-                    for child in links:
-                        child_norm = normalize_url_for_storage(child)
-                        
-                        # Check if URL should be crawled based on classification
-                        if should_crawl_url(child_norm, base_domain, allow_external, is_from_sitemap=False, user_agent=http_config.user_agent):
-                            children_to_enqueue.append((child_norm, depth + 1, original_norm, base_domain))
-                            print(f"  -> Enqueued: {child_norm}")
-                        else:
-                            # Record but don't crawl
+                    # Only follow internal links if not in CSV restricted mode
+                    if depth < limits.max_depth and (not csv_urls or csv_seed_mode):
+                        for child in links:
+                            child_norm = normalize_url_for_storage(child)
+                            
+                            # Check if URL should be crawled based on classification
+                            if should_crawl_url(child_norm, base_domain, allow_external, is_from_sitemap=False, user_agent=http_config.user_agent, csv_urls=csv_urls, csv_seed_mode=csv_seed_mode):
+                                children_to_enqueue.append((child_norm, depth + 1, original_norm, base_domain))
+                                print(f"  -> Enqueued: {child_norm}")
+                            else:
+                                # Record but don't crawl
+                                urls_to_upsert.append((child_norm, "other", base_domain, original_norm))
+                                from .db import classify_url
+                                classification = classify_url(child_norm, base_domain, is_from_sitemap=False)
+                                print(f"  -> {classification.title()} URL recorded: {child_norm}")
+                    elif csv_urls and not csv_seed_mode:
+                        # In CSV restricted mode, just record links but don't follow them
+                        for child in links:
+                            child_norm = normalize_url_for_storage(child)
                             urls_to_upsert.append((child_norm, "other", base_domain, original_norm))
                             from .db import classify_url
                             classification = classify_url(child_norm, base_domain, is_from_sitemap=False)

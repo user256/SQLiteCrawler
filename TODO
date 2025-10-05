@@ -3,115 +3,206 @@
 ## 🚀 HIGH PRIORITY - Core Features
 
 ### Asset Crawling & Analysis
-* **Fetch assets** - crawl js/image/iframe/fonts and other linked assets
-* **Caching analysis** - report on caching / assets with no cache / cache busting
-* **Performance hints** - evaluate preconnect/preload/prefetch for speed improvements
+* **Record assets** - option to record js/image/iframe/fonts and other linked assets  
+* **Fetch assets** - option to record & crawl js/image/iframe/fonts and other linked assets  
+* **Caching analysis** - report on caching / assets with no cache / cache busting  
+* **Performance hints** - evaluate preconnect/preload/prefetch for speed improvements  
 
 ### Advanced Crawling Features
-* **CSV crawl support** - crawl from csv (restricted && seed)
-* **Proxy rotation** - allow rotating proxies
-* **Header rotation** - enable rotating headers
-* **Custom extraction** - CSS Path, XPath, regex data extraction
-* **Crawl comparison** - enable comparison between crawls (including staging, URL remapping)
+* **CSV crawl support** - crawl from csv (restricted && seed)  
+* **Proxy rotation** - allow rotating proxies  
+* **Header rotation** - enable rotating headers  
+* **Custom extraction** - CSS Path, XPath, regex data extraction  
+* **Crawl comparison** - enable comparison between crawls (including staging, URL remapping)  
 
 ### Authentication & Security
-* ✅ **Authenticated crawling** - support basic/digest auth for staging sites
-* **Security headers** - CSP, X-CTO, Referrer-Policy, X-Frame-Options
-* **HTTPS analysis** - HTTP URLs, mixed content detection
-* **HSTS validation** - header validation and security analysis
+* ✅ **Authenticated crawling** - support basic/digest auth for staging sites  
+* **Security headers** - CSP, X-CTO, Referrer-Policy, X-Frame-Options  
+* **HTTPS analysis** - HTTP URLs, mixed content detection  
+* **HSTS validation** - header validation and security analysis  
+
+### Crawl Quality & Politeness
+* **Adaptive politeness per host**: dynamic rate limiting based on latency and 429/503s  
+* **Conditional requests**: ETag / If-Modified-Since handling  
+* **Respect crawl-delay and robots TTL caching**  
+* **Frontier scoring**: prioritize by depth, sitemap priority, inlinks, etc.  
+* **URL normalization hardening**: punycode, default ports, param sorting, UTM stripping  
+
+### Robust Fetching
+* **HTTP/2 & Brotli support**  
+* **Content-type sniffing** & charset detection  
+* **Meta refresh & JS redirects detection**  
+* **Retry/backoff tuning by failure type**  
+
+### Data Model & Storage
+* **Content hashing** (SHA256) + **SimHash/MinHash** near-duplicate detection  
+* **Incremental crawl diffs** - detect changes per URL  
+* **SQLite optimization**: WAL mode, batching, indexed hot columns  
+* **Migration system** with semver schema migrations  
+
+### Extraction Accuracy
+* **Boilerplate removal & word count** for thin content checks  
+* **Language detection** for `html lang` vs detected  
+* **Canonical via HTTP Link header**  
+* **OpenGraph/Twitter Cards** extraction  
+
+### Observability
+* **Metrics (Prometheus)** - fetch rates, errors, latency  
+* **Structured logging (JSON)** with crawl_id correlation  
+* **Progress UI/CLI** - pages/min, ETA, per-host stats  
+
+---
 
 ## 📊 MEDIUM PRIORITY - SEO Analysis
 
 ### Content Analysis
-* **Schema.org extraction** - markdown/json-ld parsing
-* **OpenGraph analysis** - social media metadata
-* **Pagination detection** - rel=prev/next analysis
-* **Title tag analysis** - length, uniqueness, boilerplate detection
-* **Meta description analysis** - length, uniqueness, duplicate detection
-* **Header structure audit** - H1-H6 hierarchy and optimization
-* **Content analysis** - thin content detection, word count
-* **Language validation** - html lang vs detected language
+* **Schema.org extraction** - markdown/json-ld parsing  
+* **OpenGraph analysis** - social media metadata  
+* **Pagination detection** - rel=prev/next analysis  
+* **Title tag analysis** - length, uniqueness, boilerplate detection  
+* **Meta description analysis** - length, uniqueness, duplicate detection  
+* **Header structure audit** - H1-H6 hierarchy and optimization  
+* **Content analysis** - thin content detection, word count  
+* **Language validation** - html lang vs detected language  
 
 ### Link & Navigation Analysis
-* **Anchor text quality** - generic anchors, empty anchors
-* **Broken links detection** - 4xx/5xx internal and external links
-* **Nofollow analysis** - page-level vs per-link nofollow
-* **Faceted navigation** - parameter explosions, session IDs
-* **Breadcrumb detection** - navigation analysis
-* **Internal links graph** - crawl depth, hub pages, PageRank calculation
+* **Anchor text quality** - generic anchors, empty anchors  
+* **Broken links detection** - 4xx/5xx internal and external links  
+* **Nofollow analysis** - page-level vs per-link nofollow  
+* **Faceted navigation** - parameter explosions, session IDs  
+* **Breadcrumb detection** - navigation analysis  
+* **Internal links graph** - crawl depth, hub pages, PageRank calculation  
+* **Graph export** - GraphML/CSV/Parquet with weights  
+* **Broken link audit** - grouped by type and source examples  
+* **Nofollow semantics** - page-level and link-level parsing  
 
 ### Technical SEO
-* **XML sitemap auditing** - analyze sitemap quality and issues
-  - URLs not in sitemap
-  - URLs in crawl but not sitemaps
-  - Non-indexable URLs in sitemap
-* **Canonical analysis** - links to non-canonical versions, broken/redirected canonicals
-* **Duplicate content** - identify similar/duplicate pages using content fingerprinting
-* **Hreflang audit** - international SEO checks
-  - Multiple language declarations
-  - Mismatching reciprocity
-  - Hreflang vs html lang conflicts
-  - Invalid language codes
-  - Non-indexable URLs in hreflang
-* **Redirect analysis** - track and optimize redirect chains
+* **XML sitemap auditing** - analyze sitemap quality and issues  
+  - URLs not in sitemap  
+  - URLs in crawl but not sitemaps  
+  - Non-indexable URLs in sitemap  
+* **Canonical analysis** - links to non-canonical versions, broken/redirected canonicals  
+* **Duplicate content** - identify similar/duplicate pages  
+* **Hreflang audit** - international SEO checks  
+  - Multiple language declarations  
+  - Mismatching reciprocity  
+  - Hreflang vs html lang conflicts  
+  - Invalid language codes  
+  - Non-indexable URLs in hreflang  
+* **Redirect analysis** - track and optimize redirect chains  
+* **Hreflang reciprocity** - round-trip validation  
+
+### JavaScript Rendering Enhancements
+* **Selective rendering** - only render when JS is needed  
+* **Network interception** - block analytics/fonts; record assets if enabled  
+* **Headless detection hardening** - better Playwright masking  
+
+---
 
 ## 🔍 LOW PRIORITY - Advanced Analysis
 
 ### Performance & Technical
-* **TTFB tracking** - total download time analysis
-* **HTML weight** - oversized pages detection
-* **Resource hints** - preload/prefetch/dns-prefetch analysis
-* **Render blockers** - synchronous scripts in head
-* **Image optimization** - file sizes, modern formats (WebP/AVIF)
-* **Favicon validation** - app icons validation
-* **Viewport analysis** - mobile meta tag analysis
-* **Tap targets** - link density analysis
+* **TTFB tracking** - total download time analysis  
+* **HTML weight** - oversized pages detection  
+* **Resource hints** - preload/prefetch/dns-prefetch analysis  
+* **Render blockers** - synchronous scripts in head  
+* **Image optimization** - file sizes, modern formats (WebP/AVIF)  
+* **Favicon validation** - app icons validation  
+* **Viewport analysis** - mobile meta tag analysis  
+* **Tap targets** - link density analysis  
+* **Backpressure controls** - adaptive concurrency from DB latency  
+* **Disk footprint management** - control HTML retention & compression levels  
 
 ### Social & Metadata
-* **OpenGraph validation** - title, description, image
-* **Twitter Cards** - analysis and validation
-* **Social images** - aspect ratio, size, reachability
-* **Preview images** - favored preview image analysis
+* **OpenGraph validation** - title, description, image  
+* **Twitter Cards** - analysis and validation  
+* **Social images** - aspect ratio, size, reachability  
+* **Preview images** - favored preview image analysis  
 
 ### Structured Data
-* **Schema.org detection** - JSON-LD, valid types
-* **BreadcrumbList** - validation
-* **Product/Review schema** - required fields, ratings
-* **Conflicting entities** - multiple entities detection
+* **Schema.org detection** - JSON-LD, valid types  
+* **BreadcrumbList** - validation  
+* **Product/Review schema** - required fields, ratings  
+* **Conflicting entities** - multiple entities detection  
 
 ### Domain & Server Analysis
-* **SSL certificate** - validation and security headers
-* **DNS analysis** - server response analysis
-* **Canonicalization** - camelcase canonicalization
-* **Search pages** - internal search pages indexing analysis
-* **Archive pages** - tag/category archives duplicate risk
-* **Parameter handling** - UTM, session IDs
-* **Search blocking** - internal search pages noindex/robots blocking
+* **SSL certificate** - validation and security headers  
+* **DNS analysis** - server response analysis  
+* **Canonicalization** - camelcase canonicalization  
+* **Search pages** - internal search pages indexing analysis  
+* **Archive pages** - tag/category archives duplicate risk  
+* **Parameter handling** - UTM, session IDs  
+* **Search blocking** - internal search pages noindex/robots blocking  
 
 ### Advanced Features
-* **Content fingerprinting** - using shingle + MinHash/SimHash
-* **Image roles** - role=presentation detection for decorative images
-* **Meta robots conflicts** - header vs HTML conflicts
-* **Canonical conflicts** - missing, multiple, non-200 canonicals, cross-domain
-* **Content type validation** - charset validation
-* **OCSP stapling** - validation
-* **Soft 404 detection** - error detection and reporting
+* **Content fingerprinting** - using shingle + MinHash/SimHash  
+* **Image roles** - role=presentation detection for decorative images  
+* **Meta robots conflicts** - header vs HTML conflicts  
+* **Canonical conflicts** - missing, multiple, non-200 canonicals, cross-domain  
+* **Content type validation** - charset validation  
+* **OCSP stapling** - validation  
+* **Soft 404 detection** - error detection and reporting  
+
+---
+
+## 🧱 DATABASE & QUERY ADD-ONS
+* **Indexes**
+  - `urls(host)`, `urls(is_internal)`, `frontier(status, priority)`, `content(url_id)`  
+* **Materialized views**
+  - `page_analysis_latest`, `broken_links`, `non_indexable_in_sitemaps`  
+* **PRAGMAs**
+  - WAL mode, synchronous NORMAL, temp_store MEMORY  
+* **VACUUM/ANALYZE cadence**  
+
+---
+
+## ⚙️ NETWORKING & SECURITY
+* **Safe-target guardrails** - block private IPs/onion by default  
+* **PII minimization** - redact emails/phones  
+* **User-agent contact field** - include contact URL/email  
+* **GDPR/CCPA compliance** - `--do-not-store-html` mode  
+* **Proxy pools** - rotating proxies with health checks  
+* **Header rotation** - language/header rotation ethics-aware  
+
+---
+
+## 🧭 ETHICS & OPS
+* **Auto-pause** on widespread 403/429s  
+* **Do-not-crawl list** global + per-run override  
+* **Kill-switch** - total bandwidth/request caps  
+
+---
+
+## 🧰 CLI, TESTING & DEV EXPERIENCE
+* **Seed management** - CSV/regex allowlists/denylists  
+* **Exporters** - CSV/Parquet and SQLite → Postgres sync  
+* **Report presets** - `--report seo-basics`, etc.  
+* **Deterministic test crawl** - local fixtures  
+* **Property-based tests** - for normalization/robots  
+* **Fuzz HTML parsers**  
+* **Profiler hooks** - cProfile/flamegraph support  
+* **Dockerfile & devcontainer**  
+* **Type hints + ruff + mypy + pre-commit hooks**  
+* **CI matrix** (Python 3.10–3.12)  
+* **Architecture docs** - ERD, frontier FSM, dashboards  
+
+---
 
 ## 🎯 API Integrations (Future)
-* **Mobile usability** - check mobile-friendly elements
-* **Accessibility audit** - WCAG compliance checks
-* **Page speed** - Core Web Vitals and performance metrics
-* **Image optimization** - alt text, file sizes, formats
-* **JavaScript rendering** - detect JS-dependent content
+* **Mobile usability** - mobile-friendly analysis  
+* **Accessibility audit** - WCAG checks  
+* **Page speed** - Core Web Vitals integration  
+* **Image optimization API**  
+* **JavaScript rendering** - detect JS-dependent content  
 
 ---
 
 ## ✅ COMPLETED FEATURES
-* Database normalization (canonicals, robots directives, anchor texts, xpaths, hrefs)
-* Link analysis & tracking with full metadata
-* Crawl management with pause/resume functionality
-* Robots.txt analysis and compliance checking
-* Retry functionality with exponential backoff
-* Sitemap tracking and statistics
-* Code cleanup and optimization
+* Database normalization (canonicals, robots directives, anchor texts, xpaths, hrefs)  
+* Link analysis & tracking with full metadata  
+* Crawl management with pause/resume functionality  
+* Robots.txt analysis and compliance checking  
+* Retry functionality with exponential backoff  
+* Sitemap tracking and statistics  
+* Code cleanup and optimization  
 * **Authenticated crawling** - Basic/Digest HTTP authentication support (tested on staging site)

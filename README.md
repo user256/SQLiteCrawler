@@ -12,6 +12,7 @@ A high-performance, persistent web crawler built with Python and SQLite. Feature
 - **Link Analysis**: Internal/external link tracking with anchor text, XPath, and metadata
 - **Schema.org Extraction**: Extracts and validates JSON-LD, microdata, and RDFa structured data
 - **Hreflang Support**: Extracts and normalizes hreflang data from sitemaps
+- **CSV Crawl Support**: Crawl from predefined URL lists with restricted or seed modes
 - **Database Normalization**: Efficient storage with URL IDs and compressed content
 - **Async Performance**: Concurrent requests with configurable limits
 - **Flexible Configuration**: Multiple user agents, timeout settings, and crawl limits
@@ -54,6 +55,37 @@ python main.py https://example.com/ --max-pages 200
 
 # Crawl with HTTP authentication (for staging sites)
 python main.py https://staging.example.com/ --auth-username myuser --auth-password mypass
+```
+
+### CSV Crawl Support
+
+Crawl from a predefined list of URLs in CSV format:
+
+```bash
+# CSV restricted mode - only crawl URLs from the CSV file
+python main.py --csv-file urls.csv --csv-column url
+
+# CSV seed mode - use CSV URLs as starting points, then discover sitemaps and follow internal links
+python main.py --csv-file urls.csv --csv-column url --csv-seed
+
+# CSV with custom column name
+python main.py --csv-file urls.csv --csv-column website_url --csv-seed
+```
+
+**CSV Format Examples:**
+
+```csv
+url,priority
+https://example.com/,high
+https://example.com/about/,medium
+https://example.com/contact/,low
+```
+
+Or simple list format (one URL per line):
+```
+https://example.com/
+https://example.com/about/
+https://example.com/contact/
 ```
 
 ### Single URL Crawling
