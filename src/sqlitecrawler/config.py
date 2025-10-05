@@ -12,8 +12,12 @@ class AuthConfig:
     """Authentication configuration for crawling protected sites."""
     username: str = ""
     password: str = ""
-    auth_type: str = "basic"  # "basic" or "digest"
+    auth_type: str = "basic"  # "basic", "digest", "bearer", "jwt", "api_key", "custom"
     domain: str = ""  # Optional: restrict auth to specific domain
+    # Token-based authentication
+    token: str = ""  # Bearer token, JWT token, or API key
+    # Custom headers
+    custom_headers: dict = None  # Custom header/value pairs
 
 @dataclass
 class HttpConfig:

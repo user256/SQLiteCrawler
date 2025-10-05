@@ -3,13 +3,17 @@
 ## 🚀 HIGH PRIORITY - Core Features
 
 ### Robust Fetching
-* **HTTP/2 & Brotli support**  
+* ✅ **HTTP/2 & Brotli support**  
+* **Enhanced authentication methods**
+    - Authorization: Bearer <token> or Authorization: JWT <token>
+    - Custom headers / header inclusions
+    - API key authentication
 * **Content-type sniffing** & charset detection  
 * **Meta refresh & JS redirects detection**  
 * **Retry/backoff tuning by failure type**  
 
 ### Advanced Crawling Features
-* **CSV crawl support** - crawl from csv (restricted && seed)  
+* ✅ **CSV crawl support** - crawl from csv (restricted && seed)  
 * **Proxy rotation** - allow rotating proxies  
 * **Header rotation** - enable rotating headers  
 * **Custom extraction** - CSS Path, XPath, regex data extraction  

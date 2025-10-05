@@ -68,10 +68,16 @@ Examples:
                    help="Username for HTTP authentication (basic/digest)")
     p.add_argument("--auth-password", type=str, default="",
                    help="Password for HTTP authentication (basic/digest)")
-    p.add_argument("--auth-type", type=str, choices=["basic", "digest"], default="basic",
-                   help="Authentication type: basic or digest (default: basic)")
+    p.add_argument("--auth-type", type=str, choices=["basic", "digest", "bearer", "jwt", "api_key", "custom"], default="basic",
+                   help="Authentication type: basic, digest, bearer, jwt, api_key, or custom (default: basic)")
     p.add_argument("--auth-domain", type=str, default="",
                    help="Restrict authentication to specific domain (optional)")
+    p.add_argument("--auth-token", type=str, default="",
+                   help="Token for bearer/jwt/api_key authentication")
+    p.add_argument("--auth-header", type=str, default="",
+                   help="Custom header name for api_key authentication (default: X-API-Key)")
+    p.add_argument("--auth-custom-headers", type=str, default="",
+                   help="Custom headers in format 'Header1:Value1,Header2:Value2'")
     
     # HTTP/2 and compression
     p.add_argument("--no-http2", action="store_true",
@@ -123,14 +129,29 @@ Examples:
     
     # Create authentication configuration if provided
     auth_config = None
-    if args.auth_username and args.auth_password:
+    if (args.auth_username and args.auth_password) or args.auth_token or args.auth_custom_headers:
         from src.sqlitecrawler.config import AuthConfig
+        
+        # Parse custom headers
+        custom_headers = {}
+        if args.auth_custom_headers:
+            for header_pair in args.auth_custom_headers.split(','):
+                if ':' in header_pair:
+                    header_name, header_value = header_pair.split(':', 1)
+                    custom_headers[header_name.strip()] = header_value.strip()
+        
         auth_config = AuthConfig(
             username=args.auth_username,
             password=args.auth_password,
             auth_type=args.auth_type,
-            domain=args.auth_domain
+            domain=args.auth_domain,
+            token=args.auth_token,
+            custom_headers=custom_headers if custom_headers else None
         )
+        
+        # Set custom API key header if provided
+        if args.auth_type == "api_key" and args.auth_header:
+            auth_config.api_key_header = args.auth_header
     
     # Process CSV file if provided
     csv_urls = []

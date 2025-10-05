@@ -57,11 +57,61 @@ python main.py https://example.com/ --max-pages 200
 # Crawl with HTTP authentication (for staging sites)
 python main.py https://staging.example.com/ --auth-username myuser --auth-password mypass
 
+# Bearer token authentication
+python main.py https://api.example.com/ --auth-type bearer --auth-token "your-bearer-token"
+
+# JWT token authentication
+python main.py https://api.example.com/ --auth-type jwt --auth-token "your-jwt-token"
+
+# API key authentication
+python main.py https://api.example.com/ --auth-type api_key --auth-token "your-api-key"
+
+# Custom API key header
+python main.py https://api.example.com/ --auth-type api_key --auth-token "your-key" --auth-header "X-API-Key"
+
+# Custom headers
+python main.py https://api.example.com/ --auth-type custom --auth-custom-headers "X-Custom-Header:Value1,X-Another-Header:Value2"
+
 # Disable HTTP/2 (use HTTP/1.1)
 python main.py https://example.com/ --no-http2
 
 # Disable Brotli compression
 python main.py https://example.com/ --no-brotli
+```
+
+### Authentication Methods
+
+SQLiteCrawler supports multiple authentication methods for protected sites and APIs:
+
+**Basic/Digest Authentication:**
+```bash
+python main.py https://staging.example.com/ --auth-username myuser --auth-password mypass --auth-type basic
+```
+
+**Bearer Token Authentication:**
+```bash
+python main.py https://api.example.com/ --auth-type bearer --auth-token "your-bearer-token"
+```
+
+**JWT Token Authentication:**
+```bash
+python main.py https://api.example.com/ --auth-type jwt --auth-token "your-jwt-token"
+```
+
+**API Key Authentication:**
+```bash
+python main.py https://api.example.com/ --auth-type api_key --auth-token "your-api-key"
+python main.py https://api.example.com/ --auth-type api_key --auth-token "your-key" --auth-header "X-API-Key"
+```
+
+**Custom Headers:**
+```bash
+python main.py https://api.example.com/ --auth-type custom --auth-custom-headers "X-Custom-Header:Value1,X-Another-Header:Value2"
+```
+
+**Domain-Restricted Authentication:**
+```bash
+python main.py https://example.com/ --auth-username myuser --auth-password mypass --auth-domain "staging.example.com"
 ```
 
 ### CSV Crawl Support

@@ -24,9 +24,35 @@ def _should_use_auth(url: str, auth: AuthConfig) -> bool:
     return True
 
 
-def _create_auth(auth: AuthConfig) -> Tuple[str, str]:
-    """Create httpx authentication tuple."""
-    return (auth.username, auth.password)
+def _create_auth(auth: AuthConfig) -> Optional[Tuple[str, str]]:
+    """Create httpx authentication tuple for basic/digest auth."""
+    if auth.auth_type in ["basic", "digest"] and auth.username and auth.password:
+        return (auth.username, auth.password)
+    return None
+
+
+def _get_auth_headers(auth: AuthConfig) -> Dict[str, str]:
+    """Get authentication headers for token-based and custom authentication."""
+    headers = {}
+    
+    if not auth:
+        return headers
+    
+    # Token-based authentication
+    if auth.auth_type == "bearer" and auth.token:
+        headers["Authorization"] = f"Bearer {auth.token}"
+    elif auth.auth_type == "jwt" and auth.token:
+        headers["Authorization"] = f"JWT {auth.token}"
+    elif auth.auth_type == "api_key" and auth.token:
+        # Default to X-API-Key header, but allow custom header name
+        header_name = getattr(auth, 'api_key_header', 'X-API-Key')
+        headers[header_name] = auth.token
+    
+    # Custom headers
+    if auth.custom_headers:
+        headers.update(auth.custom_headers)
+    
+    return headers
 
 
 def _get_compression_headers() -> Dict[str, str]:
@@ -62,7 +88,8 @@ async def fetch(url: str, cfg: HttpConfig) -> Tuple[int, str, Dict[str, str], st
     # Prepare headers
     headers = {
         "User-Agent": cfg.user_agent,
-        **_get_compression_headers()
+        **_get_compression_headers(),
+        **_get_auth_headers(cfg.auth)
     }
     
     # Create HTTP/2 client with timeout
@@ -111,7 +138,8 @@ async def fetch_with_redirect_tracking(url: str, cfg: HttpConfig) -> Tuple[int, 
     # Prepare headers
     headers = {
         "User-Agent": cfg.user_agent,
-        **_get_compression_headers()
+        **_get_compression_headers(),
+        **_get_auth_headers(cfg.auth)
     }
     
     # Create HTTP/2 client with timeout
@@ -186,7 +214,8 @@ async def fetch_batch(urls: List[str], cfg: HttpConfig, max_concurrency: int = 5
     # Prepare headers
     headers = {
         "User-Agent": cfg.user_agent,
-        **_get_compression_headers()
+        **_get_compression_headers(),
+        **_get_auth_headers(cfg.auth)
     }
     
     # Create HTTP/2 client with timeout
@@ -205,11 +234,16 @@ async def fetch_batch(urls: List[str], cfg: HttpConfig, max_concurrency: int = 5
             try:
                 # Check if authentication should be used for this specific URL
                 if not _should_use_auth(url, cfg.auth):
+                    # Create headers without auth for this URL
+                    no_auth_headers = {
+                        "User-Agent": cfg.user_agent,
+                        **_get_compression_headers()
+                    }
                     # Create a new client without auth for this URL
                     async with httpx.AsyncClient(
                         http2=True,
                         timeout=timeout,
-                        headers=headers,
+                        headers=no_auth_headers,
                         follow_redirects=True
                     ) as no_auth_client:
                         response = await no_auth_client.get(url)

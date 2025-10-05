@@ -20,13 +20,36 @@ def _should_use_auth(url: str, auth: AuthConfig) -> bool:
     return True
 
 def _create_auth(auth: AuthConfig) -> aiohttp.BasicAuth:
-    """Create aiohttp authentication object."""
-    if auth.auth_type.lower() == "digest":
+    """Create aiohttp authentication object for basic/digest auth."""
+    if auth.auth_type.lower() in ["basic", "digest"]:
         # Note: aiohttp doesn't have built-in digest auth support
         # For now, we'll use basic auth and let the server handle it
         return aiohttp.BasicAuth(auth.username, auth.password)
-    else:
-        return aiohttp.BasicAuth(auth.username, auth.password)
+    return None
+
+
+def _get_auth_headers(auth: AuthConfig) -> Dict[str, str]:
+    """Get authentication headers for token-based and custom authentication."""
+    headers = {}
+    
+    if not auth:
+        return headers
+    
+    # Token-based authentication
+    if auth.auth_type == "bearer" and auth.token:
+        headers["Authorization"] = f"Bearer {auth.token}"
+    elif auth.auth_type == "jwt" and auth.token:
+        headers["Authorization"] = f"JWT {auth.token}"
+    elif auth.auth_type == "api_key" and auth.token:
+        # Default to X-API-Key header, but allow custom header name
+        header_name = getattr(auth, 'api_key_header', 'X-API-Key')
+        headers[header_name] = auth.token
+    
+    # Custom headers
+    if auth.custom_headers:
+        headers.update(auth.custom_headers)
+    
+    return headers
 
 async def fetch(url: str, cfg: HttpConfig) -> Tuple[int, str, Dict[str, str], str, str]:
     """Return (status, final_url, headers, text, url) for a single request."""
@@ -43,7 +66,13 @@ async def fetch(url: str, cfg: HttpConfig) -> Tuple[int, str, Dict[str, str], st
     if _should_use_auth(url, cfg.auth):
         auth = _create_auth(cfg.auth)
     
-    async with aiohttp.ClientSession(headers={"User-Agent": cfg.user_agent}, timeout=timeout) as session:
+    # Prepare headers
+    headers = {
+        "User-Agent": cfg.user_agent,
+        **_get_auth_headers(cfg.auth)
+    }
+    
+    async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
         try:
             async with session.get(url, allow_redirects=True, auth=auth) as resp:
                 text = await resp.text(errors="ignore")
