@@ -2,9 +2,21 @@
 
 ## 🚀 HIGH PRIORITY - Core Features
 
+### Crawl Quality & Politeness
+* **Adaptive politeness per host**: dynamic rate limiting based on latency and 429/503s  
+* **Conditional requests**: ETag / If-Modified-Since handling  
+* **Respect crawl-delay and robots TTL caching**  
+* **Frontier scoring**: prioritize by depth, sitemap priority, inlinks, etc.  
+* **URL normalization hardening**: punycode, default ports, param sorting, UTM stripping  
+### Data Model & Storage
+* **Content hashing** (SHA256) + **SimHash/MinHash** near-duplicate detection  
+* **Incremental crawl diffs** - detect changes per URL  
+* **SQLite optimization**: WAL mode, batching, indexed hot columns  
+* **Migration system** with semver schema migrations  
+
 ### Robust Fetching
 * ✅ **HTTP/2 & Brotli support**  
-* **Enhanced authentication methods**
+* ✅ **Enhanced authentication methods**
     - Authorization: Bearer <token> or Authorization: JWT <token>
     - Custom headers / header inclusions
     - API key authentication
@@ -31,18 +43,6 @@
 * **HTTPS analysis** - HTTP URLs, mixed content detection  
 * **HSTS validation** - header validation and security analysis  
 
-### Crawl Quality & Politeness
-* **Adaptive politeness per host**: dynamic rate limiting based on latency and 429/503s  
-* **Conditional requests**: ETag / If-Modified-Since handling  
-* **Respect crawl-delay and robots TTL caching**  
-* **Frontier scoring**: prioritize by depth, sitemap priority, inlinks, etc.  
-* **URL normalization hardening**: punycode, default ports, param sorting, UTM stripping  
-
-### Data Model & Storage
-* **Content hashing** (SHA256) + **SimHash/MinHash** near-duplicate detection  
-* **Incremental crawl diffs** - detect changes per URL  
-* **SQLite optimization**: WAL mode, batching, indexed hot columns  
-* **Migration system** with semver schema migrations  
 
 ### Extraction Accuracy
 * **Boilerplate removal & word count** for thin content checks  
