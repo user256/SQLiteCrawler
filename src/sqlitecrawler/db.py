@@ -580,6 +580,108 @@ JOIN urls u ON sd.url_id = u.id
 JOIN schema_types st ON sd.schema_type_id = st.id
 WHERE u.classification IN ('internal', 'network')
 ORDER BY u.url, sd.position;
+
+-- Comprehensive crawl status view
+CREATE VIEW IF NOT EXISTS crawl_status AS
+WITH sitemap_stats AS (
+    SELECT 
+        COUNT(DISTINCT sitemap_url) as sitemaps_scraped,
+        COUNT(*) as urls_in_sitemaps
+    FROM sitemaps_listed
+),
+url_classification_stats AS (
+    SELECT 
+        classification,
+        COUNT(*) as count
+    FROM urls
+    GROUP BY classification
+),
+crawled_stats AS (
+    SELECT 
+        COUNT(*) as total_crawled,
+        COUNT(*) as status_200,  -- URLs with content are considered successfully crawled
+        0 as non_200  -- We don't track non-200s in this schema
+    FROM content
+),
+canonical_stats AS (
+    SELECT 
+        COUNT(*) as total_with_canonical,
+        SUM(CASE WHEN cu.canonical_url_id IS NOT NULL THEN 1 ELSE 0 END) as has_canonical,
+        SUM(CASE WHEN cu.canonical_url_id IS NULL THEN 1 ELSE 0 END) as no_canonical
+    FROM content c
+    LEFT JOIN canonical_urls cu ON c.url_id = cu.url_id
+),
+indexability_stats AS (
+    SELECT 
+        COUNT(*) as total_indexable_checked,
+        SUM(CASE WHEN overall_indexable = 1 THEN 1 ELSE 0 END) as indexable,
+        SUM(CASE WHEN overall_indexable = 0 THEN 1 ELSE 0 END) as non_indexable
+    FROM indexability
+),
+sitemap_coverage AS (
+    SELECT 
+        COUNT(DISTINCT u.id) as internal_urls_total,
+        COUNT(DISTINCT sl.url_id) as internal_urls_in_sitemap,
+        COUNT(DISTINCT u.id) - COUNT(DISTINCT sl.url_id) as internal_urls_not_in_sitemap
+    FROM urls u
+    LEFT JOIN sitemaps_listed sl ON u.id = sl.url_id
+    WHERE u.classification IN ('internal', 'network')
+),
+sitemap_orphans AS (
+    SELECT 
+        COUNT(DISTINCT sl.url_id) as sitemap_urls_total,
+        COUNT(DISTINCT c.url_id) as sitemap_urls_crawled,
+        COUNT(DISTINCT sl.url_id) - COUNT(DISTINCT c.url_id) as sitemap_urls_not_crawled
+    FROM sitemaps_listed sl
+    LEFT JOIN content c ON sl.url_id = c.url_id
+)
+SELECT 
+    -- Sitemap statistics
+    ss.sitemaps_scraped,
+    ss.urls_in_sitemaps,
+    
+    -- URL classification
+    COALESCE(SUM(CASE WHEN ucs.classification = 'internal' THEN ucs.count ELSE 0 END), 0) as internal_urls,
+    COALESCE(SUM(CASE WHEN ucs.classification = 'network' THEN ucs.count ELSE 0 END), 0) as network_urls,
+    COALESCE(SUM(CASE WHEN ucs.classification = 'external' THEN ucs.count ELSE 0 END), 0) as external_urls,
+    COALESCE(SUM(CASE WHEN ucs.classification = 'social' THEN ucs.count ELSE 0 END), 0) as social_urls,
+    
+    -- Crawl progress
+    cs.total_crawled,
+    cs.status_200,
+    cs.non_200,
+    
+    -- Canonical URL analysis
+    cans.has_canonical,
+    cans.no_canonical,
+    
+    -- Indexability analysis
+    ins.indexable,
+    ins.non_indexable,
+    
+    -- Sitemap coverage analysis
+    sc.internal_urls_not_in_sitemap,
+    so.sitemap_urls_not_crawled,
+    
+    -- Calculated percentages
+    ROUND((cs.status_200 * 100.0 / NULLIF(cs.total_crawled, 0)), 2) as success_rate_percent,
+    ROUND((cans.has_canonical * 100.0 / NULLIF(cans.total_with_canonical, 0)), 2) as canonical_coverage_percent,
+    ROUND((ins.indexable * 100.0 / NULLIF(ins.total_indexable_checked, 0)), 2) as indexability_rate_percent,
+    ROUND((sc.internal_urls_in_sitemap * 100.0 / NULLIF(sc.internal_urls_total, 0)), 2) as sitemap_coverage_percent
+
+FROM sitemap_stats ss
+CROSS JOIN url_classification_stats ucs
+CROSS JOIN crawled_stats cs
+CROSS JOIN canonical_stats cans
+CROSS JOIN indexability_stats ins
+CROSS JOIN sitemap_coverage sc
+CROSS JOIN sitemap_orphans so
+GROUP BY 
+    ss.sitemaps_scraped, ss.urls_in_sitemaps,
+    cs.total_crawled, cs.status_200, cs.non_200,
+    cans.has_canonical, cans.no_canonical,
+    ins.indexable, ins.non_indexable,
+    sc.internal_urls_not_in_sitemap, so.sitemap_urls_not_crawled;
 """
 
 async def init_pages_db(db_path: str = PAGES_DB_PATH):
@@ -1387,6 +1489,68 @@ async def get_retry_statistics(conn: aiosqlite.Connection) -> dict:
     stats['ready_for_retry'] = (await cursor.fetchone())[0]
     
     return stats
+
+async def get_crawl_status(crawl_db_path: str) -> dict:
+    """Get comprehensive crawl status information."""
+    async with aiosqlite.connect(crawl_db_path) as db:
+        cursor = await db.execute("SELECT * FROM crawl_status LIMIT 1")
+        result = await cursor.fetchone()
+        
+        if result:
+            columns = [description[0] for description in cursor.description]
+            return dict(zip(columns, result))
+        return {}
+
+async def print_crawl_status(crawl_db_path: str):
+    """Print a formatted crawl status report."""
+    status = await get_crawl_status(crawl_db_path)
+    
+    if not status:
+        print("No crawl status data available.")
+        return
+    
+    print("\n" + "="*80)
+    print("                    CRAWL STATUS REPORT")
+    print("="*80)
+    
+    # Sitemap Statistics
+    print(f"\n📋 SITEMAP DISCOVERY:")
+    print(f"   • Sitemaps scraped: {status.get('sitemaps_scraped', 0):,}")
+    print(f"   • URLs in sitemaps: {status.get('urls_in_sitemaps', 0):,}")
+    print(f"   • Sitemap coverage: {status.get('sitemap_coverage_percent', 0):.1f}%")
+    
+    # URL Classification
+    print(f"\n🔗 URL DISCOVERY:")
+    print(f"   • Internal URLs: {status.get('internal_urls', 0):,}")
+    print(f"   • Network URLs: {status.get('network_urls', 0):,}")
+    print(f"   • External URLs: {status.get('external_urls', 0):,}")
+    print(f"   • Social URLs: {status.get('social_urls', 0):,}")
+    
+    # Crawl Progress
+    print(f"\n🚀 CRAWL PROGRESS:")
+    print(f"   • Total crawled: {status.get('total_crawled', 0):,}")
+    print(f"   • Status 200: {status.get('status_200', 0):,}")
+    print(f"   • Non-200: {status.get('non_200', 0):,}")
+    print(f"   • Success rate: {status.get('success_rate_percent', 0):.1f}%")
+    
+    # Canonical URLs
+    print(f"\n🔗 CANONICAL URLS:")
+    print(f"   • With canonical: {status.get('has_canonical', 0):,}")
+    print(f"   • No canonical: {status.get('no_canonical', 0):,}")
+    print(f"   • Canonical coverage: {status.get('canonical_coverage_percent', 0):.1f}%")
+    
+    # Indexability
+    print(f"\n🔍 INDEXABILITY:")
+    print(f"   • Indexable: {status.get('indexable', 0):,}")
+    print(f"   • Non-indexable: {status.get('non_indexable', 0):,}")
+    print(f"   • Indexability rate: {status.get('indexability_rate_percent', 0):.1f}%")
+    
+    # Sitemap Analysis
+    print(f"\n📊 SITEMAP ANALYSIS:")
+    print(f"   • Internal URLs not in sitemap: {status.get('internal_urls_not_in_sitemap', 0):,}")
+    print(f"   • Sitemap URLs not crawled: {status.get('sitemap_urls_not_crawled', 0):,}")
+    
+    print("="*80)
 
 async def batch_write_hreflang_sitemap_data(hreflang_data: List[Tuple[str, str, str]], crawl_db_path: str):
     """Write hreflang data from sitemaps to the normalized database structure."""
