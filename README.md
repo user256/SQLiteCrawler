@@ -77,6 +77,12 @@ python main.py https://example.com/ --no-http2
 
 # Disable Brotli compression
 python main.py https://example.com/ --no-brotli
+
+# Configure adaptive delay settings
+python main.py https://example.com/ --min-delay 0.5 --max-delay 5.0 --delay-increase 2.0
+
+# Disable adaptive delay (use fixed delay only)
+python main.py https://example.com/ --no-adaptive-delay
 ```
 
 ### Authentication Methods
@@ -113,6 +119,34 @@ python main.py https://api.example.com/ --auth-type custom --auth-custom-headers
 ```bash
 python main.py https://example.com/ --auth-username myuser --auth-password mypass --auth-domain "staging.example.com"
 ```
+
+### Adaptive Delay & Politeness
+
+SQLiteCrawler implements intelligent adaptive delay to be respectful to target servers:
+
+**Automatic Rate Limiting:**
+- Starts with a configurable base delay (default: 0.2s)
+- Automatically increases delay when receiving 429 (rate limited) or 5xx errors
+- Gradually decreases delay on successful responses
+- Tracks delays per host independently
+
+**Configuration Options:**
+```bash
+# Set minimum and maximum delays
+python main.py https://example.com/ --min-delay 0.1 --max-delay 10.0
+
+# Adjust backoff factors
+python main.py https://example.com/ --delay-increase 1.5 --delay-decrease 0.9
+
+# Disable adaptive delay (use fixed delay only)
+python main.py https://example.com/ --no-adaptive-delay
+```
+
+**Response-Based Adjustments:**
+- **429/503/502/504**: Increase delay by 2x the increase factor
+- **408/423/420/451**: Increase delay by the increase factor  
+- **200 responses**: Gradually decrease delay back to base rate
+- **Per-host tracking**: Each domain has independent delay settings
 
 ### CSV Crawl Support
 

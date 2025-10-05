@@ -36,6 +36,12 @@ class HttpConfig:
     max_retries: int = int(os.getenv("SQLITECRAWLER_MAX_RETRIES", "3"))
     retry_delay: float = float(os.getenv("SQLITECRAWLER_RETRY_DELAY", "1.0"))
     retry_backoff_factor: float = float(os.getenv("SQLITECRAWLER_RETRY_BACKOFF", "2.0"))
+    # Politeness and rate limiting configuration
+    enable_adaptive_delay: bool = os.getenv("SQLITECRAWLER_ADAPTIVE_DELAY", "1") == "1"
+    min_delay: float = float(os.getenv("SQLITECRAWLER_MIN_DELAY", "0.1"))
+    max_delay: float = float(os.getenv("SQLITECRAWLER_MAX_DELAY", "10.0"))
+    delay_increase_factor: float = float(os.getenv("SQLITECRAWLER_DELAY_INCREASE", "1.5"))
+    delay_decrease_factor: float = float(os.getenv("SQLITECRAWLER_DELAY_DECREASE", "0.9"))
     # Authentication configuration
     auth: AuthConfig = None
 

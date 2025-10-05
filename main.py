@@ -85,6 +85,18 @@ Examples:
     p.add_argument("--no-brotli", action="store_true",
                    help="Disable Brotli compression support")
     
+    # Politeness and rate limiting
+    p.add_argument("--no-adaptive-delay", action="store_true",
+                   help="Disable adaptive delay (use fixed delay only)")
+    p.add_argument("--min-delay", type=float, default=None,
+                   help="Minimum delay between requests in seconds (default: 0.1)")
+    p.add_argument("--max-delay", type=float, default=None,
+                   help="Maximum delay between requests in seconds (default: 10.0)")
+    p.add_argument("--delay-increase", type=float, default=None,
+                   help="Factor to increase delay on errors (default: 1.5)")
+    p.add_argument("--delay-decrease", type=float, default=None,
+                   help="Factor to decrease delay on success (default: 0.9)")
+    
     # CSV crawl support
     p.add_argument("--csv-file", type=str, default="",
                    help="CSV file containing URLs to crawl (one URL per line or column)")
@@ -206,6 +218,11 @@ Examples:
         max_retries=args.max_retries,
         retry_delay=args.retry_delay,
         retry_backoff_factor=args.retry_backoff,
+        enable_adaptive_delay=not args.no_adaptive_delay,
+        min_delay=args.min_delay if args.min_delay is not None else HttpConfig().min_delay,
+        max_delay=args.max_delay if args.max_delay is not None else HttpConfig().max_delay,
+        delay_increase_factor=args.delay_increase if args.delay_increase is not None else HttpConfig().delay_increase_factor,
+        delay_decrease_factor=args.delay_decrease if args.delay_decrease is not None else HttpConfig().delay_decrease_factor,
         auth=auth_config,
     )
     
@@ -230,6 +247,12 @@ Examples:
         print(f"  Skip sitemaps: {http_config.skip_sitemaps}")
         print(f"  HTTP/2 Support: {http_config.enable_http2}")
         print(f"  Brotli Compression: {http_config.enable_brotli}")
+        print(f"  Adaptive Delay: {http_config.enable_adaptive_delay}")
+        if http_config.enable_adaptive_delay:
+            print(f"  Min Delay: {http_config.min_delay}s")
+            print(f"  Max Delay: {http_config.max_delay}s")
+            print(f"  Delay Increase Factor: {http_config.delay_increase_factor}x")
+            print(f"  Delay Decrease Factor: {http_config.delay_decrease_factor}x")
         print(f"  Allow external URLs: {args.allow_external}")
         print(f"  Max workers: {args.max_workers}")
         if auth_config:

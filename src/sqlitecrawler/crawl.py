@@ -2,8 +2,9 @@ from __future__ import annotations
 import asyncio
 import signal
 import sys
+import time
 from urllib.parse import urlsplit, urlparse, urlunparse
-from typing import Iterable, Tuple, List, Optional
+from typing import Iterable, Tuple, List, Optional, Dict
 from concurrent.futures import ThreadPoolExecutor
 from .config import HttpConfig, CrawlLimits, get_db_paths
 from .db import (
@@ -27,7 +28,7 @@ from .db import (
     batch_write_internal_links,
     extract_content_from_html,
 )
-from .fetch import fetch_many, fetch_many_with_redirect_tracking
+from .fetch import fetch_many, fetch_many_with_redirect_tracking, fetch_with_redirect_tracking
 from .parse import classify, extract_links_from_html, extract_links_with_metadata, extract_from_sitemap
 from .robots import discover_sitemaps_from_domain, crawl_sitemaps_recursive, parse_robots_txt
 
@@ -92,6 +93,114 @@ def should_crawl_url(url: str, base_domain: str, allow_external: bool, is_from_s
 # Global flag for graceful shutdown
 shutdown_requested = False
 
+# Per-host delay tracking for adaptive politeness
+class HostDelayTracker:
+    def __init__(self, http_config: HttpConfig):
+        self.http_config = http_config
+        self.host_delays: Dict[str, float] = {}  # host -> current delay
+        self.host_last_request: Dict[str, float] = {}  # host -> timestamp of last request
+        self.host_response_counts: Dict[str, Dict[int, int]] = {}  # host -> {status_code: count}
+    
+    def get_delay_for_host(self, host: str) -> float:
+        """Get the current delay for a host."""
+        return self.host_delays.get(host, self.http_config.delay_between_requests)
+    
+    def update_delay_for_host(self, host: str, status_code: int, response_time: float = None):
+        """Update delay for a host based on response status and timing."""
+        if host not in self.host_delays:
+            self.host_delays[host] = self.http_config.delay_between_requests
+        
+        if host not in self.host_response_counts:
+            self.host_response_counts[host] = {}
+        
+        # Track response counts
+        self.host_response_counts[host][status_code] = self.host_response_counts[host].get(status_code, 0) + 1
+        
+        # Adjust delay based on status code
+        current_delay = self.host_delays[host]
+        
+        if status_code in [429, 503, 502, 504]:  # Rate limiting or server errors
+            # Increase delay significantly
+            new_delay = min(current_delay * self.http_config.delay_increase_factor * 2, self.http_config.max_delay)
+            self.host_delays[host] = new_delay
+            print(f"  -> Increased delay for {host} to {new_delay:.2f}s (status: {status_code})")
+        elif status_code in [408, 423, 420, 451]:  # Timeout or temporary issues
+            # Increase delay moderately
+            new_delay = min(current_delay * self.http_config.delay_increase_factor, self.http_config.max_delay)
+            self.host_delays[host] = new_delay
+            print(f"  -> Increased delay for {host} to {new_delay:.2f}s (status: {status_code})")
+        elif status_code == 200 and current_delay > self.http_config.delay_between_requests:
+            # Decrease delay gradually for successful responses
+            new_delay = max(current_delay * self.http_config.delay_decrease_factor, self.http_config.delay_between_requests)
+            self.host_delays[host] = new_delay
+            if new_delay != current_delay:
+                print(f"  -> Decreased delay for {host} to {new_delay:.2f}s (successful response)")
+    
+    async def wait_for_host(self, host: str):
+        """Wait for the appropriate delay before making a request to a host."""
+        if not self.http_config.enable_adaptive_delay:
+            # Use fixed delay
+            await asyncio.sleep(self.http_config.delay_between_requests)
+            return
+        
+        current_time = time.time()
+        last_request_time = self.host_last_request.get(host, 0)
+        required_delay = self.get_delay_for_host(host)
+        
+        # Calculate how long to wait
+        time_since_last = current_time - last_request_time
+        wait_time = max(0, required_delay - time_since_last)
+        
+        if wait_time > 0:
+            await asyncio.sleep(wait_time)
+        
+        # Update last request time
+        self.host_last_request[host] = time.time()
+    
+    def get_stats(self) -> Dict[str, Dict]:
+        """Get delay statistics for all hosts."""
+        stats = {}
+        for host in self.host_delays:
+            stats[host] = {
+                'current_delay': self.host_delays[host],
+                'response_counts': self.host_response_counts.get(host, {}),
+                'last_request': self.host_last_request.get(host, 0)
+            }
+        return stats
+
+async def fetch_with_delay(url: str, cfg: HttpConfig, delay_tracker: HostDelayTracker) -> Tuple[int, str, Dict[str, str], str, str, str]:
+    """Fetch a single URL with adaptive delay based on host response history."""
+    from urllib.parse import urlparse
+    
+    # Extract host for delay tracking
+    host = urlparse(url).netloc.lower()
+    
+    # Wait for appropriate delay before making request
+    await delay_tracker.wait_for_host(host)
+    
+    # Make the request
+    start_time = time.time()
+    result = await fetch_with_redirect_tracking(url, cfg)
+    response_time = time.time() - start_time
+    
+    # Update delay based on response
+    status_code = result[0]
+    delay_tracker.update_delay_for_host(host, status_code, response_time)
+    
+    return result
+
+async def fetch_many_with_delay(urls: List[str], cfg: HttpConfig, delay_tracker: HostDelayTracker) -> List[Tuple[int, str, Dict[str, str], str, str, str]]:
+    """Fetch multiple URLs with adaptive delay, processing them sequentially to respect delays."""
+    results = []
+    
+    for url in urls:
+        if shutdown_requested:
+            break
+        result = await fetch_with_delay(url, cfg, delay_tracker)
+        results.append(result)
+    
+    return results
+
 def signal_handler(signum, frame):
     """Handle interrupt signals for graceful shutdown."""
     global shutdown_requested
@@ -115,6 +224,9 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
     
     cfg = http_config or HttpConfig()
     limits = limits or CrawlLimits()
+    
+    # Initialize delay tracker for adaptive politeness
+    delay_tracker = HostDelayTracker(cfg)
     
     # Extract base domain for URL classification
     from urllib.parse import urlparse
@@ -301,8 +413,8 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
         
         # The frontier contains normalized URLs, but we need to fetch them
         # We'll use the normalized URLs directly since they should work for fetching
-        # Use redirect tracking to capture redirect chains
-        results = await fetch_many_with_redirect_tracking(urls, cfg)
+        # Use redirect tracking to capture redirect chains with adaptive delay
+        results = await fetch_many_with_delay(urls, cfg, delay_tracker)
 
         to_mark_done = []
         to_enqueue = []
@@ -539,6 +651,17 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
                 print(f"\nNo failed URLs requiring retry.")
     except Exception as e:
         print(f"Error reporting retry statistics: {e}")
+    
+    # Report delay statistics
+    if verbose and cfg.enable_adaptive_delay:
+        delay_stats = delay_tracker.get_stats()
+        if delay_stats:
+            print(f"\nDelay Statistics:")
+            for host, stats in delay_stats.items():
+                print(f"  {host}:")
+                print(f"    Current delay: {stats['current_delay']:.2f}s")
+                if stats['response_counts']:
+                    print(f"    Response counts: {stats['response_counts']}")
     
     if shutdown_requested:
         print("Crawl paused. Run the same command again to resume from where you left off.")
