@@ -34,6 +34,10 @@ def extract_schema_data(html: str, base_url: str) -> List[Dict[str, Any]]:
     rdfa_data = extract_rdfa(soup, base_url)
     schema_data.extend(rdfa_data)
     
+    # Detect broken schema markup
+    broken_schema = detect_broken_schema(soup, base_url)
+    schema_data.extend(broken_schema)
+    
     return schema_data
 
 
@@ -409,3 +413,134 @@ def get_schema_statistics(schema_data: List[Dict[str, Any]]) -> Dict[str, Any]:
             stats['validation_errors'].extend(errors)
     
     return stats
+
+
+def detect_broken_schema(soup: BeautifulSoup, base_url: str) -> List[Dict[str, Any]]:
+    """
+    Detect broken or malformed schema.org markup that our extraction missed.
+    
+    This function looks for:
+    1. JSON-LD with @context and @type but malformed structure
+    2. Microdata with itemscope but missing itemtype or malformed
+    3. RDFa with vocab/typeof but malformed structure
+    4. Schema.org URLs in content that aren't properly structured
+    """
+    broken_schema = []
+    
+    # 1. Check for malformed JSON-LD
+    script_tags = soup.find_all('script', type='application/ld+json')
+    for i, script in enumerate(script_tags):
+        try:
+            content = script.get_text(strip=True)
+            if not content:
+                continue
+                
+            # Check if it looks like JSON-LD but failed to parse
+            if ('@context' in content and '@type' in content and 
+                ('schema.org' in content or 'Schema.org' in content)):
+                try:
+                    json.loads(content)
+                    # If it parses successfully, it's not broken
+                    continue
+                except json.JSONDecodeError:
+                    # This is broken JSON-LD
+                    broken_schema.append({
+                        'format': 'json-ld',
+                        'type': 'BrokenJSON-LD',
+                        'raw_data': content,
+                        'parsed_data': None,
+                        'position': i,
+                        'is_valid': False,
+                        'validation_errors': ['Malformed JSON-LD: Invalid JSON syntax']
+                    })
+        except Exception as e:
+            continue
+    
+    # 2. Check for malformed microdata
+    # Look for itemscope without proper itemtype
+    items_with_scope = soup.find_all(attrs={'itemscope': True})
+    for i, item in enumerate(items_with_scope):
+        itemtype = item.get('itemtype', '')
+        if not itemtype or 'schema.org' not in itemtype:
+            # This is broken microdata
+            broken_schema.append({
+                'format': 'microdata',
+                'type': 'BrokenMicrodata',
+                'raw_data': str(item)[:500],  # Limit size
+                'parsed_data': None,
+                'position': i,
+                'is_valid': False,
+                'validation_errors': ['Malformed microdata: itemscope without valid itemtype']
+            })
+    
+    # 3. Check for malformed RDFa
+    # Look for typeof without proper vocab or malformed structure
+    items_with_typeof = soup.find_all(attrs={'typeof': True})
+    for i, item in enumerate(items_with_typeof):
+        typeof = item.get('typeof', '')
+        vocab = item.get('vocab', '')
+        
+        if not typeof or ('schema.org' not in typeof and 'schema.org' not in vocab):
+            # This is broken RDFa
+            broken_schema.append({
+                'format': 'rdfa',
+                'type': 'BrokenRDFa',
+                'raw_data': str(item)[:500],  # Limit size
+                'parsed_data': None,
+                'position': i,
+                'is_valid': False,
+                'validation_errors': ['Malformed RDFa: typeof without valid schema.org vocab']
+            })
+    
+    # 4. Check for schema.org references in content that aren't structured
+    # Look for schema.org URLs in text content, meta tags, or comments
+    schema_url_pattern = re.compile(r'https?://schema\.org/[A-Za-z]+', re.IGNORECASE)
+    
+    # Check in meta tags
+    meta_tags = soup.find_all('meta')
+    for i, meta in enumerate(meta_tags):
+        content = meta.get('content', '') or meta.get('property', '') or meta.get('name', '')
+        if schema_url_pattern.search(str(content)):
+            # Found schema.org reference in meta tag
+            broken_schema.append({
+                'format': 'meta',
+                'type': 'BrokenMetaSchema',
+                'raw_data': str(meta),
+                'parsed_data': None,
+                'position': i,
+                'is_valid': False,
+                'validation_errors': ['Schema.org reference in meta tag without proper structure']
+            })
+    
+    # Check in comments
+    comments = soup.find_all(string=lambda text: isinstance(text, str) and 'schema.org' in text)
+    for i, comment in enumerate(comments):
+        if schema_url_pattern.search(comment):
+            broken_schema.append({
+                'format': 'comment',
+                'type': 'BrokenCommentSchema',
+                'raw_data': comment[:200],  # Limit size
+                'parsed_data': None,
+                'position': i,
+                'is_valid': False,
+                'validation_errors': ['Schema.org reference in comment without proper structure']
+            })
+    
+    # 5. Check for incomplete JSON-LD blocks
+    # Look for script tags that contain partial JSON-LD
+    all_scripts = soup.find_all('script')
+    for i, script in enumerate(all_scripts):
+        content = script.get_text(strip=True)
+        if ('@context' in content or '@type' in content) and 'application/ld+json' not in script.get('type', ''):
+            # Found JSON-LD-like content in non-JSON-LD script
+            broken_schema.append({
+                'format': 'script',
+                'type': 'BrokenScriptSchema',
+                'raw_data': content[:500],  # Limit size
+                'parsed_data': None,
+                'position': i,
+                'is_valid': False,
+                'validation_errors': ['JSON-LD content in script tag without proper type attribute']
+            })
+    
+    return broken_schema
