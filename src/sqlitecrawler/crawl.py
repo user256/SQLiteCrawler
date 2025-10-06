@@ -102,17 +102,17 @@ class HostDelayTracker:
         self.host_response_counts: Dict[str, Dict[int, int]] = {}  # host -> {status_code: count}
     
     def get_delay_for_host(self, host: str) -> float:
-        """Get the current delay for a host, respecting robots.txt crawl-delay if available."""
-        # Check for robots.txt crawl-delay first
-        from .robots import get_crawl_delay
-        robots_delay = get_crawl_delay(host, self.http_config.user_agent)
-        
-        # Use the maximum of robots.txt delay and our adaptive delay
+        """Get the current delay for a host, respecting robots.txt crawl-delay if enabled."""
         adaptive_delay = self.host_delays.get(host, self.http_config.delay_between_requests)
         
-        if robots_delay is not None:
-            # Use the maximum of robots.txt crawl-delay and our current adaptive delay
-            return max(robots_delay, adaptive_delay)
+        # Only check robots.txt crawl-delay if we respect robots.txt
+        if self.http_config.respect_robots_txt and not self.http_config.ignore_robots_crawlability:
+            from .robots import get_crawl_delay
+            robots_delay = get_crawl_delay(host, self.http_config.user_agent)
+            
+            if robots_delay is not None:
+                # Use the maximum of robots.txt crawl-delay and our current adaptive delay
+                return max(robots_delay, adaptive_delay)
         
         return adaptive_delay
     
@@ -716,11 +716,12 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
                     print(f"  {host}:")
                     print(f"    Current delay: {stats['current_delay']:.2f}s")
                     
-                    # Check for robots.txt crawl-delay
-                    from .robots import get_crawl_delay
-                    robots_delay = get_crawl_delay(host, cfg.user_agent)
-                    if robots_delay is not None:
-                        print(f"    Robots.txt crawl-delay: {robots_delay:.2f}s")
+                    # Check for robots.txt crawl-delay (only if respecting robots.txt)
+                    if cfg.respect_robots_txt and not cfg.ignore_robots_crawlability:
+                        from .robots import get_crawl_delay
+                        robots_delay = get_crawl_delay(host, cfg.user_agent)
+                        if robots_delay is not None:
+                            print(f"    Robots.txt crawl-delay: {robots_delay:.2f}s")
                     
                     if stats['response_counts']:
                         print(f"    Response counts: {stats['response_counts']}")
