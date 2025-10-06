@@ -373,13 +373,19 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
             # If there's a limit, only add up to that many URLs
             for url in sitemap_urls_list[:limits.max_pages]:
                 url_norm = normalize_url_for_storage(url)
-                await frontier_seed(url_norm, base_domain, reset=False, db_path=crawl_db_path)
+                sitemap_data = sitemap_urls_dict.get(url, {})
+                sitemap_priority = sitemap_data.get('priority')
+                await frontier_seed(url_norm, base_domain, reset=False, db_path=crawl_db_path, 
+                                  sitemap_priority=sitemap_priority, depth=0)
             print(f"Added {min(len(sitemap_urls_list), limits.max_pages)} URLs from sitemaps to frontier")
         else:
             # No limit - add all sitemap URLs
             for url in sitemap_urls_list:
                 url_norm = normalize_url_for_storage(url)
-                await frontier_seed(url_norm, base_domain, reset=False, db_path=crawl_db_path)
+                sitemap_data = sitemap_urls_dict.get(url, {})
+                sitemap_priority = sitemap_data.get('priority')
+                await frontier_seed(url_norm, base_domain, reset=False, db_path=crawl_db_path, 
+                                  sitemap_priority=sitemap_priority, depth=0)
             print(f"Added {len(sitemap_urls_list)} URLs from sitemaps to frontier")
 
     processed = 0
@@ -390,7 +396,7 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
             break
             
         # Check for URLs ready for retry first
-        from .db import get_urls_ready_for_retry
+        from .db import get_urls_ready_for_retry, frontier_update_priority_scores
         import aiosqlite
         try:
             async with aiosqlite.connect(crawl_db_path) as conn:
@@ -402,6 +408,15 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
                         await frontier_seed(url, base_domain, reset=False, db_path=crawl_db_path)
         except Exception as e:
             print(f"Error checking retry URLs: {e}")
+        
+        # Update priority scores periodically (every 50 processed pages)
+        if processed > 0 and processed % 50 == 0:
+            try:
+                await frontier_update_priority_scores(crawl_db_path)
+                if verbose:
+                    print(f"Updated priority scores after processing {processed} pages")
+            except Exception as e:
+                print(f"Error updating priority scores: {e}")
             
         # Determine batch size based on whether there's a limit
         if limits.max_pages > 0:
@@ -671,16 +686,31 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
     except Exception as e:
         print(f"Error reporting retry statistics: {e}")
     
-    # Report delay statistics
-    if verbose and cfg.enable_adaptive_delay:
-        delay_stats = delay_tracker.get_stats()
-        if delay_stats:
-            print(f"\nDelay Statistics:")
-            for host, stats in delay_stats.items():
-                print(f"  {host}:")
-                print(f"    Current delay: {stats['current_delay']:.2f}s")
-                if stats['response_counts']:
-                    print(f"    Response counts: {stats['response_counts']}")
+        # Report delay statistics
+        if verbose and cfg.enable_adaptive_delay:
+            delay_stats = delay_tracker.get_stats()
+            if delay_stats:
+                print(f"\nDelay Statistics:")
+                for host, stats in delay_stats.items():
+                    print(f"  {host}:")
+                    print(f"    Current delay: {stats['current_delay']:.2f}s")
+                    if stats['response_counts']:
+                        print(f"    Response counts: {stats['response_counts']}")
+        
+        # Report frontier scoring statistics
+        if verbose:
+            try:
+                from .db import frontier_scoring_stats
+                scoring_stats = await frontier_scoring_stats(crawl_db_path)
+                if scoring_stats:
+                    print(f"\nFrontier Scoring Statistics:")
+                    print(f"  Average priority score: {scoring_stats['avg_priority']:.3f}")
+                    print(f"  Highest priority score: {scoring_stats['max_priority']:.3f}")
+                    print(f"  Lowest priority score: {scoring_stats['min_priority']:.3f}")
+                    print(f"  URLs with sitemap priority: {scoring_stats['sitemap_priority_count']}")
+                    print(f"  Average inlinks count: {scoring_stats['avg_inlinks']:.1f}")
+            except Exception as e:
+                print(f"Error getting frontier scoring stats: {e}")
     
     if shutdown_requested:
         print("Crawl paused. Run the same command again to resume from where you left off.")

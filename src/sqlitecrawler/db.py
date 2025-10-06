@@ -413,12 +413,17 @@ CREATE TABLE IF NOT EXISTS frontier (
   status TEXT NOT NULL CHECK (status IN ('queued','done')),
   enqueued_at INTEGER,
   updated_at INTEGER,
+  priority_score REAL DEFAULT 0.0,
+  sitemap_priority REAL DEFAULT 0.5,
+  inlinks_count INTEGER DEFAULT 0,
+  content_type_score REAL DEFAULT 1.0,
   FOREIGN KEY (url_id) REFERENCES urls (id),
   FOREIGN KEY (parent_id) REFERENCES urls (id),
   UNIQUE(url_id)
 );
 CREATE INDEX IF NOT EXISTS idx_frontier_status ON frontier(status);
 CREATE INDEX IF NOT EXISTS idx_frontier_url_id ON frontier(url_id);
+CREATE INDEX IF NOT EXISTS idx_frontier_priority ON frontier(priority_score DESC, enqueued_at ASC);
 
 -- Sitemap tracking table - tracks URLs found in sitemaps
 CREATE TABLE IF NOT EXISTS sitemaps_listed (
@@ -1740,27 +1745,111 @@ async def get_or_create_url_id_with_conn(url: str, base_domain: str, db_path: st
     )
     return cursor.lastrowid
 
+# ------------------ frontier scoring ------------------
+
+def calculate_content_type_score(url: str, content_type: str = None) -> float:
+    """Calculate content type priority score for URL."""
+    # Higher scores = higher priority
+    
+    # HTML pages get highest priority
+    if content_type and 'html' in content_type.lower():
+        return 1.0
+    
+    # Check URL patterns for content type hints
+    url_lower = url.lower()
+    
+    # Important page types
+    if any(pattern in url_lower for pattern in ['/home', '/index', '/main', '/']):
+        return 1.0
+    elif any(pattern in url_lower for pattern in ['/product', '/item', '/game', '/article', '/news']):
+        return 0.9
+    elif any(pattern in url_lower for pattern in ['/category', '/section', '/page']):
+        return 0.8
+    elif any(pattern in url_lower for pattern in ['/search', '/filter', '/sort']):
+        return 0.6
+    elif any(pattern in url_lower for pattern in ['/api', '/ajax', '/json']):
+        return 0.3
+    elif any(pattern in url_lower for pattern in ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg']):
+        return 0.2
+    elif any(pattern in url_lower for pattern in ['.css', '.js', '.pdf', '.doc', '.zip']):
+        return 0.1
+    else:
+        return 0.7  # Default for unknown content types
+
+def calculate_depth_score(depth: int) -> float:
+    """Calculate depth-based priority score."""
+    # Lower depth = higher priority (closer to root)
+    if depth == 0:
+        return 1.0
+    elif depth == 1:
+        return 0.9
+    elif depth == 2:
+        return 0.8
+    elif depth == 3:
+        return 0.7
+    elif depth <= 5:
+        return 0.6
+    else:
+        return 0.5
+
+def calculate_sitemap_priority_score(sitemap_priority: float = None) -> float:
+    """Calculate sitemap priority score."""
+    if sitemap_priority is None:
+        return 0.5  # Default priority
+    return max(0.1, min(1.0, sitemap_priority))  # Clamp between 0.1 and 1.0
+
+def calculate_inlinks_score(inlinks_count: int) -> float:
+    """Calculate inlinks-based priority score."""
+    if inlinks_count == 0:
+        return 0.5
+    elif inlinks_count <= 5:
+        return 0.6
+    elif inlinks_count <= 20:
+        return 0.8
+    elif inlinks_count <= 100:
+        return 0.9
+    else:
+        return 1.0
+
+def calculate_priority_score(url: str, depth: int, sitemap_priority: float = None, 
+                           inlinks_count: int = 0, content_type: str = None) -> float:
+    """Calculate overall priority score for a URL."""
+    # Weighted combination of different factors
+    depth_score = calculate_depth_score(depth) * 0.3
+    sitemap_score = calculate_sitemap_priority_score(sitemap_priority) * 0.3
+    inlinks_score = calculate_inlinks_score(inlinks_count) * 0.2
+    content_score = calculate_content_type_score(url, content_type) * 0.2
+    
+    return depth_score + sitemap_score + inlinks_score + content_score
+
 # ------------------ frontier (pause/resume) ------------------
 
-async def frontier_seed(start: str, base_domain: str, reset: bool = False, db_path: str = CRAWL_DB_PATH):
+async def frontier_seed(start: str, base_domain: str, reset: bool = False, db_path: str = CRAWL_DB_PATH, 
+                       sitemap_priority: float = None, depth: int = 0):
     now = int(time.time())
     
     # Get URL ID for start URL
     start_url_id = await get_or_create_url_id(start, base_domain, db_path)
+    
+    # Calculate priority score
+    priority_score = calculate_priority_score(start, depth, sitemap_priority)
+    content_type_score = calculate_content_type_score(start)
     
     async with aiosqlite.connect(db_path) as db:
         if reset:
             await db.execute("DELETE FROM frontier")
             # After reset, always add the start URL
             await db.execute(
-                "INSERT OR IGNORE INTO frontier(url_id, depth, parent_id, status, enqueued_at, updated_at) VALUES (?,?,?,?,?,?)",
-                (start_url_id, 0, None, 'queued', now, now),
+                """INSERT OR IGNORE INTO frontier(url_id, depth, parent_id, status, enqueued_at, updated_at, 
+                   priority_score, sitemap_priority, content_type_score) VALUES (?,?,?,?,?,?,?,?,?)""",
+                (start_url_id, depth, None, 'queued', now, now, priority_score, sitemap_priority or 0.5, content_type_score),
             )
         else:
             # For non-reset calls (like sitemap URLs), always try to add
             await db.execute(
-                "INSERT OR IGNORE INTO frontier(url_id, depth, parent_id, status, enqueued_at, updated_at) VALUES (?,?,?,?,?,?)",
-                (start_url_id, 0, None, 'queued', now, now),
+                """INSERT OR IGNORE INTO frontier(url_id, depth, parent_id, status, enqueued_at, updated_at, 
+                   priority_score, sitemap_priority, content_type_score) VALUES (?,?,?,?,?,?,?,?,?)""",
+                (start_url_id, depth, None, 'queued', now, now, priority_score, sitemap_priority or 0.5, content_type_score),
             )
         await db.commit()
 
@@ -1768,12 +1857,12 @@ async def frontier_next_batch(limit: int, db_path: str = CRAWL_DB_PATH) -> List[
     async with aiosqlite.connect(db_path) as db:
         cur = await db.execute(
             """
-            SELECT f.url_id, f.depth, f.parent_id, u.url, p.url as parent_url
+            SELECT f.url_id, f.depth, f.parent_id, u.url, p.url as parent_url, f.priority_score
             FROM frontier f
             JOIN urls u ON f.url_id = u.id
             LEFT JOIN urls p ON f.parent_id = p.id
             WHERE f.status='queued' 
-            ORDER BY f.enqueued_at 
+            ORDER BY f.priority_score DESC, f.enqueued_at ASC
             LIMIT ?
             """,
             (limit,),
@@ -1800,22 +1889,81 @@ async def frontier_mark_done(urls: Iterable[str], base_domain: str, db_path: str
 async def frontier_enqueue_many(children: Iterable[Tuple[str, int, Optional[str]]], base_domain: str, db_path: str = CRAWL_DB_PATH):
     now = int(time.time())
     
-    # Convert URLs to IDs
-    children_with_ids = []
+    # Convert URLs to IDs and calculate priority scores
+    children_with_scores = []
     for (url, depth, parent_url) in children:
         url_id = await get_or_create_url_id(url, base_domain, db_path)
         parent_id = await get_or_create_url_id(parent_url, base_domain, db_path) if parent_url else None
-        children_with_ids.append((url_id, depth, parent_id))
+        
+        # Calculate priority score for this URL
+        priority_score = calculate_priority_score(url, depth)
+        content_type_score = calculate_content_type_score(url)
+        
+        children_with_scores.append((url_id, depth, parent_id, priority_score, content_type_score))
     
     async with aiosqlite.connect(db_path) as db:
         await db.executemany(
             """
-        INSERT OR IGNORE INTO frontier(url_id, depth, parent_id, status, enqueued_at, updated_at)
-        VALUES (?,?,?,?,?,?)
+        INSERT OR IGNORE INTO frontier(url_id, depth, parent_id, status, enqueued_at, updated_at, 
+                                      priority_score, sitemap_priority, content_type_score)
+        VALUES (?,?,?,?,?,?,?,?,?)
         """,
-            [(url_id, d, p_id, 'queued', now, now) for (url_id, d, p_id) in children_with_ids],
+            [(url_id, d, p_id, 'queued', now, now, priority_score, 0.5, content_type_score) 
+             for (url_id, d, p_id, priority_score, content_type_score) in children_with_scores],
         )
         await db.commit()
+
+async def frontier_update_priority_scores(db_path: str = CRAWL_DB_PATH):
+    """Update priority scores for all queued URLs based on current inlinks count."""
+    async with aiosqlite.connect(db_path) as db:
+        # Get inlinks count for each URL
+        cur = await db.execute("""
+            SELECT f.url_id, f.depth, f.sitemap_priority, f.content_type_score, u.url,
+                   COALESCE(COUNT(il.target_url_id), 0) as inlinks_count
+            FROM frontier f
+            JOIN urls u ON f.url_id = u.id
+            LEFT JOIN internal_links il ON f.url_id = il.target_url_id
+            WHERE f.status = 'queued'
+            GROUP BY f.url_id, f.depth, f.sitemap_priority, f.content_type_score, u.url
+        """)
+        rows = await cur.fetchall()
+        
+        # Update priority scores
+        for row in rows:
+            url_id, depth, sitemap_priority, content_type_score, url, inlinks_count = row
+            priority_score = calculate_priority_score(url, depth, sitemap_priority, inlinks_count)
+            
+            await db.execute("""
+                UPDATE frontier 
+                SET priority_score = ?, inlinks_count = ?
+                WHERE url_id = ?
+            """, (priority_score, inlinks_count, url_id))
+        
+        await db.commit()
+
+async def frontier_scoring_stats(db_path: str = CRAWL_DB_PATH) -> Dict:
+    """Return frontier scoring statistics."""
+    async with aiosqlite.connect(db_path) as db:
+        cur = await db.execute("""
+            SELECT 
+                AVG(priority_score) as avg_priority,
+                MAX(priority_score) as max_priority,
+                MIN(priority_score) as min_priority,
+                COUNT(CASE WHEN sitemap_priority > 0.5 THEN 1 END) as sitemap_priority_count,
+                AVG(inlinks_count) as avg_inlinks
+            FROM frontier 
+            WHERE status = 'queued'
+        """)
+        row = await cur.fetchone()
+        if row and row[0] is not None:
+            return {
+                'avg_priority': row[0],
+                'max_priority': row[1],
+                'min_priority': row[2],
+                'sitemap_priority_count': row[3],
+                'avg_inlinks': row[4]
+            }
+        return None
 
 async def frontier_stats(db_path: str = CRAWL_DB_PATH) -> Tuple[int, int]:
     """Return (#queued, #done)."""

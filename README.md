@@ -14,6 +14,7 @@ A high-performance, persistent web crawler built with Python and SQLite. Feature
 - **Hreflang Support**: Extracts and normalizes hreflang data from sitemaps
 - **CSV Crawl Support**: Crawl from predefined URL lists with restricted or seed modes
 - **HTTP/2 & Brotli Support**: Modern HTTP/2 client with Brotli compression for improved performance
+- **Intelligent Frontier Scoring**: Prioritizes URLs by depth, sitemap priority, inlinks, and content type for optimal crawl efficiency
 - **Database Normalization**: Efficient storage with URL IDs and compressed content
 - **Async Performance**: Concurrent requests with configurable limits
 - **Flexible Configuration**: Multiple user agents, timeout settings, and crawl limits
@@ -147,6 +148,22 @@ python main.py https://example.com/ --no-adaptive-delay
 - **408/423/420/451**: Increase delay by the increase factor  
 - **200/304 responses**: Gradually decrease delay back to base rate
 - **Per-host tracking**: Each domain has independent delay settings
+
+### Intelligent Frontier Scoring
+
+SQLiteCrawler uses intelligent URL prioritization to crawl the most important pages first:
+
+**Multi-Factor Scoring System:**
+- **Depth-based scoring**: Prioritizes pages closer to the root (depth 0 = highest priority)
+- **Sitemap priority**: Respects XML sitemap priority values when available
+- **Inlinks count**: Pages with more internal links get higher priority
+- **Content type scoring**: HTML pages prioritized over assets (images, CSS, JS)
+- **URL pattern analysis**: Recognizes important page types (/home, /product, /article, etc.)
+
+**Automatic Priority Updates:**
+- Priority scores recalculated every 50 pages based on discovered inlinks
+- Real-time frontier reordering ensures optimal crawl progression
+- Detailed scoring statistics reported in verbose mode
 
 ### Conditional Requests & Efficiency
 

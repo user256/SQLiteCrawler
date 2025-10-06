@@ -291,9 +291,25 @@ def process_sitemap(sitemap_soup: BeautifulSoup, verbose: bool = False) -> tuple
             if hreflangs:
                 hreflang_count += len(hreflangs)
             
+            # Extract priority and lastmod
+            priority_tag = url_element.find("priority")
+            priority = None
+            if priority_tag and priority_tag.text:
+                try:
+                    priority = float(priority_tag.text.strip())
+                except ValueError:
+                    priority = None
+            
+            lastmod_tag = url_element.find("lastmod")
+            lastmod = None
+            if lastmod_tag and lastmod_tag.text:
+                lastmod = lastmod_tag.text.strip()
+            
             urls_dict[url_value] = {
                 'hreflangs': hreflangs,
-                'hrefs': hrefs
+                'hrefs': hrefs,
+                'priority': priority,
+                'lastmod': lastmod
             }
         
         if verbose:
