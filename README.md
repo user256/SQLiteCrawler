@@ -149,6 +149,13 @@ python main.py https://example.com/ --no-adaptive-delay
 - **200/304 responses**: Gradually decrease delay back to base rate
 - **Per-host tracking**: Each domain has independent delay settings
 
+**Robots.txt Crawl-Delay Integration:**
+- **Automatic extraction**: Parses `Crawl-delay` directives from robots.txt
+- **User-agent specific**: Respects per-user-agent crawl-delay settings
+- **Intelligent combination**: Uses maximum of robots.txt delay and adaptive delay
+- **TTL caching**: Caches robots.txt files for 24 hours to avoid repeated requests
+- **Verbose reporting**: Shows robots.txt crawl-delay in delay statistics
+
 ### Intelligent Frontier Scoring
 
 SQLiteCrawler uses intelligent URL prioritization to crawl the most important pages first:

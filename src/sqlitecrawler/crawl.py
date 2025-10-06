@@ -102,8 +102,19 @@ class HostDelayTracker:
         self.host_response_counts: Dict[str, Dict[int, int]] = {}  # host -> {status_code: count}
     
     def get_delay_for_host(self, host: str) -> float:
-        """Get the current delay for a host."""
-        return self.host_delays.get(host, self.http_config.delay_between_requests)
+        """Get the current delay for a host, respecting robots.txt crawl-delay if available."""
+        # Check for robots.txt crawl-delay first
+        from .robots import get_crawl_delay
+        robots_delay = get_crawl_delay(host, self.http_config.user_agent)
+        
+        # Use the maximum of robots.txt delay and our adaptive delay
+        adaptive_delay = self.host_delays.get(host, self.http_config.delay_between_requests)
+        
+        if robots_delay is not None:
+            # Use the maximum of robots.txt crawl-delay and our current adaptive delay
+            return max(robots_delay, adaptive_delay)
+        
+        return adaptive_delay
     
     def update_delay_for_host(self, host: str, status_code: int, response_time: float = None):
         """Update delay for a host based on response status and timing."""
@@ -417,6 +428,16 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
                     print(f"Updated priority scores after processing {processed} pages")
             except Exception as e:
                 print(f"Error updating priority scores: {e}")
+        
+        # Clear expired robots.txt cache entries periodically (every 100 processed pages)
+        if processed > 0 and processed % 100 == 0:
+            try:
+                from .robots import robots_cache
+                robots_cache.clear_expired()
+                if verbose:
+                    print(f"Cleared expired robots.txt cache entries after processing {processed} pages")
+            except Exception as e:
+                print(f"Error clearing expired robots.txt cache: {e}")
             
         # Determine batch size based on whether there's a limit
         if limits.max_pages > 0:
@@ -694,6 +715,13 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
                 for host, stats in delay_stats.items():
                     print(f"  {host}:")
                     print(f"    Current delay: {stats['current_delay']:.2f}s")
+                    
+                    # Check for robots.txt crawl-delay
+                    from .robots import get_crawl_delay
+                    robots_delay = get_crawl_delay(host, cfg.user_agent)
+                    if robots_delay is not None:
+                        print(f"    Robots.txt crawl-delay: {robots_delay:.2f}s")
+                    
                     if stats['response_counts']:
                         print(f"    Response counts: {stats['response_counts']}")
         

@@ -3,26 +3,56 @@ Robots.txt parsing and sitemap discovery functionality.
 """
 import aiohttp
 import asyncio
+import time
 from urllib.parse import urljoin, urlparse
-from typing import List, Optional, Dict, Set
+from typing import List, Optional, Dict, Set, Tuple
 import urllib.robotparser
 from bs4 import BeautifulSoup
 
 
 class RobotsCache:
-    """Cache for robots.txt files to avoid repeated requests."""
+    """Cache for robots.txt files with TTL support to avoid repeated requests."""
     
-    def __init__(self):
-        self._cache: Dict[str, urllib.robotparser.RobotFileParser] = {}
+    def __init__(self, default_ttl: int = 86400):  # 24 hours default TTL
+        self._cache: Dict[str, Tuple[urllib.robotparser.RobotFileParser, float, Dict[str, float]]] = {}
         self._failed_domains: Set[str] = set()
+        self._default_ttl = default_ttl
     
     def get_robots_parser(self, domain: str) -> Optional[urllib.robotparser.RobotFileParser]:
-        """Get cached robots parser for domain."""
-        return self._cache.get(domain)
+        """Get cached robots parser for domain if not expired."""
+        if domain not in self._cache:
+            return None
+        
+        parser, cached_time, crawl_delays = self._cache[domain]
+        current_time = time.time()
+        
+        # Check if cache entry has expired
+        if current_time - cached_time > self._default_ttl:
+            del self._cache[domain]
+            return None
+        
+        return parser
     
-    def set_robots_parser(self, domain: str, parser: urllib.robotparser.RobotFileParser):
-        """Cache robots parser for domain."""
-        self._cache[domain] = parser
+    def get_crawl_delay(self, domain: str, user_agent: str = "*") -> Optional[float]:
+        """Get crawl delay for domain and user agent if not expired."""
+        if domain not in self._cache:
+            return None
+        
+        parser, cached_time, crawl_delays = self._cache[domain]
+        current_time = time.time()
+        
+        # Check if cache entry has expired
+        if current_time - cached_time > self._default_ttl:
+            del self._cache[domain]
+            return None
+        
+        # Return crawl delay for specific user agent or wildcard
+        return crawl_delays.get(user_agent) or crawl_delays.get("*")
+    
+    def set_robots_parser(self, domain: str, parser: urllib.robotparser.RobotFileParser, crawl_delays: Dict[str, float] = None):
+        """Cache robots parser for domain with TTL."""
+        current_time = time.time()
+        self._cache[domain] = (parser, current_time, crawl_delays or {})
     
     def mark_failed(self, domain: str):
         """Mark domain as failed to fetch robots.txt."""
@@ -31,6 +61,18 @@ class RobotsCache:
     def is_failed(self, domain: str) -> bool:
         """Check if domain failed to fetch robots.txt."""
         return domain in self._failed_domains
+    
+    def clear_expired(self):
+        """Clear expired cache entries."""
+        current_time = time.time()
+        expired_domains = []
+        
+        for domain, (parser, cached_time, crawl_delays) in self._cache.items():
+            if current_time - cached_time > self._default_ttl:
+                expired_domains.append(domain)
+        
+        for domain in expired_domains:
+            del self._cache[domain]
 
 
 # Global robots cache
@@ -93,6 +135,8 @@ async def parse_robots_txt(domain: str, user_agent: str = "SQLiteCrawler/0.2", h
         
         # Manually parse the content
         current_user_agent = None
+        crawl_delays = {}  # user_agent -> delay in seconds
+        
         for line in robots_content.splitlines():
             line = line.strip()
             if line and not line.startswith('#'):
@@ -110,6 +154,12 @@ async def parse_robots_txt(domain: str, user_agent: str = "SQLiteCrawler/0.2", h
                         if current_user_agent not in parser._entries:
                             parser._entries[current_user_agent] = []
                         parser._entries[current_user_agent].append((key, value))
+                    elif key == 'crawl-delay' and current_user_agent:
+                        try:
+                            delay = float(value)
+                            crawl_delays[current_user_agent] = delay
+                        except ValueError:
+                            print(f"[robots.txt] Invalid crawl-delay value '{value}' for user-agent '{current_user_agent}'")
         
         # If no user-agent was specified, use '*' as default
         if not parser._user_agents:
@@ -117,8 +167,8 @@ async def parse_robots_txt(domain: str, user_agent: str = "SQLiteCrawler/0.2", h
             if '*' not in parser._entries:
                 parser._entries['*'] = []
         
-        # Cache the parser
-        robots_cache.set_robots_parser(domain, parser)
+        # Cache the parser with crawl delays
+        robots_cache.set_robots_parser(domain, parser, crawl_delays)
         return parser
         
     except Exception as e:
@@ -148,6 +198,10 @@ async def get_sitemaps_from_robots(domain: str, user_agent: str = "SQLiteCrawler
         return extract_sitemaps_from_robots(robots_content)
     return []
 
+
+def get_crawl_delay(domain: str, user_agent: str = "SQLiteCrawler/0.2") -> Optional[float]:
+    """Get crawl delay for domain and user agent from robots.txt."""
+    return robots_cache.get_crawl_delay(domain, user_agent)
 
 def is_url_crawlable(url: str, user_agent: str = "SQLiteCrawler/0.2") -> bool:
     """Check if a URL is crawlable according to robots.txt."""
