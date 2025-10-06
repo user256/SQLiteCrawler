@@ -8,13 +8,62 @@ from urllib.parse import urljoin, urlparse
 from typing import List, Optional, Dict, Set, Tuple
 import urllib.robotparser
 from bs4 import BeautifulSoup
+from email.utils import parsedate_to_datetime
+
+
+def calculate_cache_ttl(headers: Dict[str, str], default_ttl: int = 3600) -> int:
+    """Calculate cache TTL from server headers, respecting Cache-Control and Expires."""
+    try:
+        # Check Cache-Control header first
+        cache_control = headers.get('cache-control', '').lower()
+        if cache_control:
+            # Parse max-age directive
+            if 'max-age=' in cache_control:
+                max_age_str = cache_control.split('max-age=')[1].split(',')[0].strip()
+                try:
+                    max_age = int(max_age_str)
+                    return max_age
+                except ValueError:
+                    pass
+            
+            # Check for no-cache or no-store
+            if 'no-cache' in cache_control or 'no-store' in cache_control:
+                return 0  # Don't cache
+        
+        # Check Expires header
+        expires = headers.get('expires')
+        if expires:
+            try:
+                expires_dt = parsedate_to_datetime(expires)
+                current_dt = time.time()
+                expires_ts = expires_dt.timestamp()
+                ttl = int(expires_ts - current_dt)
+                return max(0, ttl)  # Don't return negative TTL
+            except (ValueError, TypeError):
+                pass
+        
+        # Check Last-Modified for heuristic freshness
+        last_modified = headers.get('last-modified')
+        if last_modified:
+            try:
+                # Use 10% of age as freshness (RFC 7234)
+                last_modified_dt = parsedate_to_datetime(last_modified)
+                age = time.time() - last_modified_dt.timestamp()
+                heuristic_ttl = int(age * 0.1)
+                return max(0, min(heuristic_ttl, default_ttl))
+            except (ValueError, TypeError):
+                pass
+        
+        return default_ttl
+    except Exception:
+        return default_ttl
 
 
 class RobotsCache:
-    """Cache for robots.txt files with TTL support to avoid repeated requests."""
+    """Cache for robots.txt files with server cache-aware TTL support."""
     
     def __init__(self, default_ttl: int = 86400):  # 24 hours default TTL
-        self._cache: Dict[str, Tuple[urllib.robotparser.RobotFileParser, float, Dict[str, float]]] = {}
+        self._cache: Dict[str, Tuple[urllib.robotparser.RobotFileParser, float, Dict[str, float], Dict[str, str]]] = {}
         self._failed_domains: Set[str] = set()
         self._default_ttl = default_ttl
     
@@ -23,11 +72,14 @@ class RobotsCache:
         if domain not in self._cache:
             return None
         
-        parser, cached_time, crawl_delays = self._cache[domain]
+        parser, cached_time, crawl_delays, headers = self._cache[domain]
         current_time = time.time()
         
+        # Calculate TTL from server headers
+        server_ttl = calculate_cache_ttl(headers, self._default_ttl)
+        
         # Check if cache entry has expired
-        if current_time - cached_time > self._default_ttl:
+        if current_time - cached_time > server_ttl:
             del self._cache[domain]
             return None
         
@@ -38,21 +90,24 @@ class RobotsCache:
         if domain not in self._cache:
             return None
         
-        parser, cached_time, crawl_delays = self._cache[domain]
+        parser, cached_time, crawl_delays, headers = self._cache[domain]
         current_time = time.time()
         
+        # Calculate TTL from server headers
+        server_ttl = calculate_cache_ttl(headers, self._default_ttl)
+        
         # Check if cache entry has expired
-        if current_time - cached_time > self._default_ttl:
+        if current_time - cached_time > server_ttl:
             del self._cache[domain]
             return None
         
         # Return crawl delay for specific user agent or wildcard
         return crawl_delays.get(user_agent) or crawl_delays.get("*")
     
-    def set_robots_parser(self, domain: str, parser: urllib.robotparser.RobotFileParser, crawl_delays: Dict[str, float] = None):
+    def set_robots_parser(self, domain: str, parser: urllib.robotparser.RobotFileParser, crawl_delays: Dict[str, float] = None, headers: Dict[str, str] = None):
         """Cache robots parser for domain with TTL."""
         current_time = time.time()
-        self._cache[domain] = (parser, current_time, crawl_delays or {})
+        self._cache[domain] = (parser, current_time, crawl_delays or {}, headers or {})
     
     def mark_failed(self, domain: str):
         """Mark domain as failed to fetch robots.txt."""
@@ -67,8 +122,9 @@ class RobotsCache:
         current_time = time.time()
         expired_domains = []
         
-        for domain, (parser, cached_time, crawl_delays) in self._cache.items():
-            if current_time - cached_time > self._default_ttl:
+        for domain, (parser, cached_time, crawl_delays, headers) in self._cache.items():
+            server_ttl = calculate_cache_ttl(headers, self._default_ttl)
+            if current_time - cached_time > server_ttl:
                 expired_domains.append(domain)
         
         for domain in expired_domains:
@@ -76,10 +132,10 @@ class RobotsCache:
 
 
 class SitemapCache:
-    """Cache for sitemap content with TTL support to avoid repeated requests."""
+    """Cache for sitemap content with server cache-aware TTL support."""
     
     def __init__(self, default_ttl: int = 3600):  # 1 hour default TTL for sitemaps
-        self._cache: Dict[str, Tuple[BeautifulSoup, float]] = {}
+        self._cache: Dict[str, Tuple[BeautifulSoup, float, Dict[str, str]]] = {}
         self._failed_sitemaps: Set[str] = set()
         self._default_ttl = default_ttl
     
@@ -88,20 +144,23 @@ class SitemapCache:
         if sitemap_url not in self._cache:
             return None
         
-        sitemap_soup, cached_time = self._cache[sitemap_url]
+        sitemap_soup, cached_time, headers = self._cache[sitemap_url]
         current_time = time.time()
         
+        # Calculate TTL from server headers
+        server_ttl = calculate_cache_ttl(headers, self._default_ttl)
+        
         # Check if cache entry has expired
-        if current_time - cached_time > self._default_ttl:
+        if current_time - cached_time > server_ttl:
             del self._cache[sitemap_url]
             return None
         
         return sitemap_soup
     
-    def set_sitemap(self, sitemap_url: str, sitemap_soup: BeautifulSoup):
+    def set_sitemap(self, sitemap_url: str, sitemap_soup: BeautifulSoup, headers: Dict[str, str] = None):
         """Cache sitemap content with TTL."""
         current_time = time.time()
-        self._cache[sitemap_url] = (sitemap_soup, current_time)
+        self._cache[sitemap_url] = (sitemap_soup, current_time, headers or {})
     
     def mark_failed(self, sitemap_url: str):
         """Mark sitemap as failed to fetch."""
@@ -116,8 +175,9 @@ class SitemapCache:
         current_time = time.time()
         expired_sitemaps = []
         
-        for sitemap_url, (sitemap_soup, cached_time) in self._cache.items():
-            if current_time - cached_time > self._default_ttl:
+        for sitemap_url, (sitemap_soup, cached_time, headers) in self._cache.items():
+            server_ttl = calculate_cache_ttl(headers, self._default_ttl)
+            if current_time - cached_time > server_ttl:
                 expired_sitemaps.append(sitemap_url)
         
         for sitemap_url in expired_sitemaps:
@@ -142,8 +202,8 @@ def init_caches(http_config=None):
     sitemap_cache = SitemapCache(sitemap_ttl)
 
 
-async def fetch_robots_txt(domain: str, user_agent: str = "SQLiteCrawler/0.2", http_config=None) -> Optional[str]:
-    """Fetch robots.txt content for a domain."""
+async def fetch_robots_txt(domain: str, user_agent: str = "SQLiteCrawler/0.2", http_config=None) -> Tuple[Optional[str], Dict[str, str]]:
+    """Fetch robots.txt content for a domain and return content with headers."""
     robots_url = f"https://{domain}/robots.txt"
     
     # Prepare authentication if needed
@@ -157,17 +217,19 @@ async def fetch_robots_txt(domain: str, user_agent: str = "SQLiteCrawler/0.2", h
         timeout = aiohttp.ClientTimeout(total=10)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(robots_url, headers={'User-Agent': user_agent}, auth=auth) as response:
+                headers = dict(response.headers)
                 if response.status == 200:
-                    return await response.text()
+                    content = await response.text()
+                    return content, headers
                 elif response.status >= 500:
                     print(f"[robots.txt] Server error {response.status} for {robots_url}, assuming crawl allowed")
-                    return None
+                    return None, headers
                 else:
                     print(f"[robots.txt] HTTP {response.status} for {robots_url}")
-                    return None
+                    return None, headers
     except Exception as e:
         print(f"[robots.txt] Error fetching {robots_url}: {e}")
-        return None
+        return None, {}
 
 
 async def parse_robots_txt(domain: str, user_agent: str = "SQLiteCrawler/0.2", http_config=None) -> Optional[urllib.robotparser.RobotFileParser]:
@@ -186,7 +248,7 @@ async def parse_robots_txt(domain: str, user_agent: str = "SQLiteCrawler/0.2", h
         return cached_parser
     
     # Fetch robots.txt
-    robots_content = await fetch_robots_txt(domain, user_agent, http_config)
+    robots_content, headers = await fetch_robots_txt(domain, user_agent, http_config)
     if robots_content is None:
         robots_cache.mark_failed(domain)
         return None
@@ -234,8 +296,8 @@ async def parse_robots_txt(domain: str, user_agent: str = "SQLiteCrawler/0.2", h
             if '*' not in parser._entries:
                 parser._entries['*'] = []
         
-        # Cache the parser with crawl delays
-        robots_cache.set_robots_parser(domain, parser, crawl_delays)
+        # Cache the parser with crawl delays and headers
+        robots_cache.set_robots_parser(domain, parser, crawl_delays, headers)
         return parser
         
     except Exception as e:
@@ -369,9 +431,10 @@ async def fetch_sitemap(url: str, user_agent: str = "SQLiteCrawler/0.2", verbose
                     if verbose:
                         print(f"[sitemap] Content length: {len(content)} bytes")
                     sitemap_soup = BeautifulSoup(content, 'xml')
+                    headers = dict(response.headers)
                     
-                    # Cache the successful result
-                    sitemap_cache.set_sitemap(url, sitemap_soup)
+                    # Cache the successful result with headers
+                    sitemap_cache.set_sitemap(url, sitemap_soup, headers)
                     return sitemap_soup
                 else:
                     print(f"[sitemap] HTTP {response.status} for {url}")
