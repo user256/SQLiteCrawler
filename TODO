@@ -1,6 +1,8 @@
 # SQLiteCrawler TODO List
 
 ## 🚀 HIGH PRIORITY - Core Features
+* internal links is showing blank links - suspect this might involve images - lets add a flag to show this and if so lets also scrape alt attrib as anchor text
+
 
 ### Crawl Quality & Politeness
 * ✅ **Adaptive politeness per host**: dynamic rate limiting based on latency and 429/503s  
@@ -11,6 +13,8 @@
 * **URL normalization hardening**: punycode, default ports, param sorting, UTM stripping  
 
 ### Data Model & Storage
+* Crawl depth - we'd like to see at what level of a crawl a url is found - even if usrls are initially discovered via xml sitemaps
+* Cluster identification - create a view showing the count of urls within each natural parent
 * **Content hashing** (SHA256) + **SimHash/MinHash** near-duplicate detection  
 * **Incremental crawl diffs** - detect changes per URL  
 * **SQLite optimization**: WAL mode, batching, indexed hot columns  

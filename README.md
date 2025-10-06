@@ -10,7 +10,7 @@ A high-performance, persistent web crawler built with Python and SQLite. Feature
 - **Sitemap Discovery**: Automatic XML sitemap parsing and URL discovery
 - **Robots.txt Compliance**: Respects crawling policies, discovers sitemaps, and analyzes crawlability
 - **Link Analysis**: Internal/external link tracking with anchor text, XPath, and metadata
-- **Schema.org Extraction**: Extracts and validates JSON-LD, microdata, and RDFa structured data
+- **Schema.org Extraction**: Extracts and validates JSON-LD, microdata, and RDFa structured data with normalized storage and hierarchical relationships
 - **Hreflang Support**: Extracts and normalizes hreflang data from sitemaps
 - **CSV Crawl Support**: Crawl from predefined URL lists with restricted or seed modes
 - **HTTP/2 & Brotli Support**: Modern HTTP/2 client with Brotli compression for improved performance
@@ -171,6 +171,25 @@ SQLiteCrawler uses intelligent URL prioritization to crawl the most important pa
 - Priority scores recalculated every 50 pages based on discovered inlinks
 - Real-time frontier reordering ensures optimal crawl progression
 - Detailed scoring statistics reported in verbose mode
+
+### Normalized Schema Storage
+
+SQLiteCrawler implements intelligent schema storage with significant space savings:
+
+**Content-Based Deduplication:**
+- **SHA256 hashing**: Identical schema instances stored only once
+- **Normalized content**: Removes variable fields (@id, timestamps, URLs) for consistent hashing
+- **Storage efficiency**: 30-90% reduction in schema storage depending on site structure
+
+**Hierarchical Relationships:**
+- **Main entity identification**: Automatically identifies primary schema entities (WebPage, Article, Product)
+- **Property relationships**: Links nested properties (ImageObject, BreadcrumbList) to main entities
+- **Parent-child structure**: Maintains schema hierarchy instead of flat storage
+
+**Example Storage Savings:**
+- **Organization schema**: Used on 10 pages, stored once with 10 references (90% savings)
+- **WebSite schema**: Used on 9 pages, stored once with 9 references (89% savings)
+- **Person schema**: Used on 4 pages, stored once with 4 references (75% savings)
 
 ### Conditional Requests & Efficiency
 

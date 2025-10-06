@@ -50,9 +50,31 @@ def extract_content_from_html(html: str, headers: dict = None, base_url: str = N
         canonical_tag = soup.find('link', attrs={'rel': 'canonical'})
         canonical_url = canonical_tag.get('href', '').strip() if canonical_tag else None
         
-        # Extract HTML lang declaration
+        # Extract hreflang URLs from HTML head
+        hreflang_urls = []
+        hreflang_links = soup.find_all('link', attrs={'rel': 'alternate', 'hreflang': True})
+        for link in hreflang_links:
+            href = link.get('href', '').strip()
+            hreflang = link.get('hreflang', '').strip()
+            if href and hreflang:
+                hreflang_urls.append({'url': href, 'hreflang': hreflang})
+        
+        # Extract HTML lang declaration (check both html and head tags)
         html_tag = soup.find('html')
-        html_lang = html_tag.get('lang', '').strip() if html_tag else None
+        html_lang = None
+        
+        if html_tag:
+            html_lang = html_tag.get('lang', '').strip()
+        
+        # If no lang on html tag, check head tag
+        if not html_lang:
+            head_tag = soup.find('head')
+            if head_tag:
+                html_lang = head_tag.get('lang', '').strip()
+        
+        # If still no lang, check for xml:lang attribute
+        if not html_lang and html_tag:
+            html_lang = html_tag.get('xml:lang', '').strip()
         
         # Extract h1 tags
         h1_tags = [h1.get_text().strip() for h1 in soup.find_all('h1') if h1.get_text().strip()]
@@ -101,6 +123,7 @@ def extract_content_from_html(html: str, headers: dict = None, base_url: str = N
             'http_header_directives': http_header_directives,
             'canonical_url': canonical_url,
             'html_lang': html_lang,
+            'hreflang_urls': hreflang_urls,
             'schema_data': schema_data
         }
     except Exception as e:
@@ -115,6 +138,7 @@ def extract_content_from_html(html: str, headers: dict = None, base_url: str = N
             'http_header_directives': [],
             'canonical_url': None,
             'html_lang': None,
+            'hreflang_urls': [],
             'schema_data': []
         }
 
@@ -187,15 +211,9 @@ PAGES_SCHEMA = """
 CREATE TABLE IF NOT EXISTS pages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   url_id INTEGER NOT NULL,
-  final_url_id INTEGER,
-  status INTEGER,
-  fetched_at INTEGER,
   headers_json TEXT,
   html_compressed BLOB,
-  etag TEXT,
-  last_modified TEXT,
   FOREIGN KEY (url_id) REFERENCES urls (id),
-  FOREIGN KEY (final_url_id) REFERENCES urls (id),
   UNIQUE(url_id)
 );
 CREATE INDEX IF NOT EXISTS idx_pages_url_id ON pages(url_id);
@@ -372,6 +390,21 @@ CREATE TABLE IF NOT EXISTS hreflang_html_head (
 CREATE INDEX IF NOT EXISTS idx_hreflang_html_url_id ON hreflang_html_head(url_id);
 CREATE INDEX IF NOT EXISTS idx_hreflang_html_lang ON hreflang_html_head(hreflang_id);
 
+-- Page metadata table (status codes, fetch info, etc.)
+CREATE TABLE IF NOT EXISTS page_metadata (
+  url_id INTEGER PRIMARY KEY,
+  initial_status_code INTEGER,  -- The first HTTP status code received
+  final_status_code INTEGER,    -- The final HTTP status code after redirects
+  final_url_id INTEGER,         -- The final URL after redirects
+  redirect_destination_url_id INTEGER,  -- The immediate redirect destination (for 301/302/etc)
+  fetched_at INTEGER,
+  etag TEXT,
+  last_modified TEXT,
+  FOREIGN KEY (url_id) REFERENCES urls (id),
+  FOREIGN KEY (final_url_id) REFERENCES urls (id),
+  FOREIGN KEY (redirect_destination_url_id) REFERENCES urls (id)
+);
+
 -- Indexability summary table
 CREATE TABLE IF NOT EXISTS indexability (
   url_id INTEGER PRIMARY KEY,
@@ -384,6 +417,11 @@ CREATE TABLE IF NOT EXISTS indexability (
   http_header_directives TEXT, -- JSON array of HTTP header directives
   FOREIGN KEY (url_id) REFERENCES urls (id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_page_metadata_url_id ON page_metadata(url_id);
+CREATE INDEX IF NOT EXISTS idx_page_metadata_initial_status ON page_metadata(initial_status_code);
+CREATE INDEX IF NOT EXISTS idx_page_metadata_final_status ON page_metadata(final_status_code);
+CREATE INDEX IF NOT EXISTS idx_page_metadata_redirect_dest ON page_metadata(redirect_destination_url_id);
 
 CREATE INDEX IF NOT EXISTS idx_indexability_url_id ON indexability(url_id);
 CREATE INDEX IF NOT EXISTS idx_indexability_overall ON indexability(overall_indexable);
@@ -425,18 +463,31 @@ CREATE INDEX IF NOT EXISTS idx_frontier_status ON frontier(status);
 CREATE INDEX IF NOT EXISTS idx_frontier_url_id ON frontier(url_id);
 CREATE INDEX IF NOT EXISTS idx_frontier_priority ON frontier(priority_score DESC, enqueued_at ASC);
 
--- Sitemap tracking table - tracks URLs found in sitemaps
-CREATE TABLE IF NOT EXISTS sitemaps_listed (
+-- Sitemaps table - tracks discovered sitemap files
+CREATE TABLE IF NOT EXISTS sitemaps (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  url_id INTEGER NOT NULL,
-  sitemap_url TEXT NOT NULL,  -- Which sitemap this URL was found in
-  sitemap_position INTEGER,  -- Position in sitemap (if available)
+  sitemap_url TEXT UNIQUE NOT NULL,
   discovered_at INTEGER NOT NULL,
-  FOREIGN KEY (url_id) REFERENCES urls (id)
+  last_crawled_at INTEGER,
+  total_urls_found INTEGER DEFAULT 0,
+  status TEXT DEFAULT 'active'  -- 'active', 'error', 'not_found'
 );
-CREATE INDEX IF NOT EXISTS idx_sitemaps_listed_url_id ON sitemaps_listed(url_id);
-CREATE INDEX IF NOT EXISTS idx_sitemaps_listed_sitemap ON sitemaps_listed(sitemap_url);
-CREATE INDEX IF NOT EXISTS idx_sitemaps_listed_discovered ON sitemaps_listed(discovered_at);
+CREATE INDEX IF NOT EXISTS idx_sitemaps_url ON sitemaps(sitemap_url);
+CREATE INDEX IF NOT EXISTS idx_sitemaps_discovered ON sitemaps(discovered_at);
+
+-- Junction table for URLs found in sitemaps (many-to-many relationship)
+CREATE TABLE IF NOT EXISTS url_sitemaps (
+  url_id INTEGER NOT NULL,
+  sitemap_id INTEGER NOT NULL,
+  position INTEGER,  -- Position in sitemap (if available)
+  discovered_at INTEGER NOT NULL,
+  PRIMARY KEY (url_id, sitemap_id),
+  FOREIGN KEY (url_id) REFERENCES urls (id),
+  FOREIGN KEY (sitemap_id) REFERENCES sitemaps (id)
+);
+CREATE INDEX IF NOT EXISTS idx_url_sitemaps_url_id ON url_sitemaps(url_id);
+CREATE INDEX IF NOT EXISTS idx_url_sitemaps_sitemap_id ON url_sitemaps(sitemap_id);
+CREATE INDEX IF NOT EXISTS idx_url_sitemaps_discovered ON url_sitemaps(discovered_at);
 
 -- Failed URLs retry tracking table
 CREATE TABLE IF NOT EXISTS failed_urls (
@@ -463,7 +514,37 @@ CREATE TABLE IF NOT EXISTS schema_types (
 );
 CREATE INDEX IF NOT EXISTS idx_schema_types_name ON schema_types(type_name);
 
--- Schema.org structured data table
+-- Schema.org structured data instances (normalized by content hash)
+CREATE TABLE IF NOT EXISTS schema_instances (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  content_hash TEXT UNIQUE NOT NULL,  -- SHA256 hash of normalized content
+  schema_type_id INTEGER NOT NULL,
+  format TEXT CHECK (format IN ('json-ld', 'microdata', 'rdfa')) NOT NULL,
+  raw_data TEXT NOT NULL,  -- The original structured data
+  parsed_data TEXT,  -- Normalized/parsed data as JSON
+  is_valid BOOLEAN DEFAULT TRUE,  -- Whether the structured data is valid
+  validation_errors TEXT,  -- JSON array of validation errors if any
+  severity TEXT DEFAULT 'info' CHECK (severity IN ('info', 'warning', 'error', 'critical')),  -- Severity of validation issues
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (schema_type_id) REFERENCES schema_types (id)
+);
+
+-- Page schema references (links pages to schema instances)
+CREATE TABLE IF NOT EXISTS page_schema_references (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  url_id INTEGER NOT NULL,
+  schema_instance_id INTEGER NOT NULL,
+  position INTEGER,  -- Position on page (for multiple instances of same type)
+  property_name TEXT,  -- For nested properties (e.g., 'image', 'breadcrumb', 'video')
+  is_main_entity BOOLEAN DEFAULT FALSE,  -- Whether this is the main entity for the page
+  parent_entity_id INTEGER,  -- Reference to parent entity if this is a nested property
+  discovered_at INTEGER NOT NULL,
+  FOREIGN KEY (url_id) REFERENCES urls (id),
+  FOREIGN KEY (schema_instance_id) REFERENCES schema_instances (id),
+  FOREIGN KEY (parent_entity_id) REFERENCES page_schema_references (id)
+);
+
+-- Legacy schema_data table (for migration compatibility)
 CREATE TABLE IF NOT EXISTS schema_data (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   url_id INTEGER NOT NULL,
@@ -474,19 +555,39 @@ CREATE TABLE IF NOT EXISTS schema_data (
   position INTEGER,  -- Position on page (for multiple instances of same type)
   is_valid BOOLEAN DEFAULT TRUE,  -- Whether the structured data is valid
   validation_errors TEXT,  -- JSON array of validation errors if any
+  severity TEXT DEFAULT 'info' CHECK (severity IN ('info', 'warning', 'error', 'critical')),  -- Severity of validation issues
   discovered_at INTEGER NOT NULL,
   FOREIGN KEY (url_id) REFERENCES urls (id),
   FOREIGN KEY (schema_type_id) REFERENCES schema_types (id)
 );
+-- Indexes for schema_instances table
+CREATE INDEX IF NOT EXISTS idx_schema_instances_hash ON schema_instances(content_hash);
+CREATE INDEX IF NOT EXISTS idx_schema_instances_type ON schema_instances(schema_type_id);
+CREATE INDEX IF NOT EXISTS idx_schema_instances_format ON schema_instances(format);
+CREATE INDEX IF NOT EXISTS idx_schema_instances_valid ON schema_instances(is_valid);
+
+-- Indexes for page_schema_references table
+CREATE INDEX IF NOT EXISTS idx_page_schema_refs_url_id ON page_schema_references(url_id);
+CREATE INDEX IF NOT EXISTS idx_page_schema_refs_instance_id ON page_schema_references(schema_instance_id);
+CREATE INDEX IF NOT EXISTS idx_page_schema_refs_main_entity ON page_schema_references(is_main_entity);
+CREATE INDEX IF NOT EXISTS idx_page_schema_refs_parent ON page_schema_references(parent_entity_id);
+
+-- Legacy indexes for schema_data table
 CREATE INDEX IF NOT EXISTS idx_schema_data_url_id ON schema_data(url_id);
 CREATE INDEX IF NOT EXISTS idx_schema_data_type ON schema_data(schema_type_id);
 CREATE INDEX IF NOT EXISTS idx_schema_data_format ON schema_data(format);
 CREATE INDEX IF NOT EXISTS idx_schema_data_valid ON schema_data(is_valid);
 
 -- View for comprehensive page analysis
-CREATE VIEW IF NOT EXISTS page_analysis AS
+CREATE VIEW IF NOT EXISTS view_crawl_overview AS
 SELECT 
     u.url,
+    f.status as frontier_status,
+    pm.initial_status_code,
+    pm.final_status_code,
+    pm.redirect_destination_url_id,
+    redirect_dest.url as redirect_destination_url,
+    i.overall_indexable,
     u.kind,
     u.classification,
     c.title,
@@ -505,7 +606,6 @@ SELECT
     i.robots_txt_allows,
     i.html_meta_allows,
     i.http_header_allows,
-    i.overall_indexable,
     i.robots_txt_directives,
     i.html_meta_directives,
     i.http_header_directives,
@@ -522,6 +622,9 @@ SELECT
      LIMIT 1) as self_hreflang
 FROM urls u
 LEFT JOIN content c ON u.id = c.url_id
+LEFT JOIN page_metadata pm ON u.id = pm.url_id
+LEFT JOIN urls redirect_dest ON pm.redirect_destination_url_id = redirect_dest.id
+LEFT JOIN frontier f ON u.id = f.url_id
 LEFT JOIN meta_descriptions md ON c.meta_description_id = md.id
 LEFT JOIN html_languages hl ON c.html_lang_id = hl.id
 LEFT JOIN indexability i ON u.id = i.url_id
@@ -531,7 +634,7 @@ WHERE u.classification IN ('internal', 'network')  -- Only show internal and net
 GROUP BY u.id;
 
 -- View for internal links with normalized data
-CREATE VIEW IF NOT EXISTS internal_links_analysis AS
+CREATE VIEW IF NOT EXISTS view_internal_links_analysis AS
 SELECT 
     u1.url as source_url,
     u2.url as target_url,
@@ -550,51 +653,114 @@ LEFT JOIN xpaths x ON il.xpath_id = x.id
 LEFT JOIN urls href_urls ON il.href_url_id = href_urls.id;
 
 -- View for sitemap statistics
-CREATE VIEW IF NOT EXISTS sitemap_statistics AS
+CREATE VIEW IF NOT EXISTS view_sitemap_statistics AS
 SELECT 
-    sl.sitemap_url,
+    s.sitemap_url,
     COUNT(*) as total_urls,
-    COUNT(DISTINCT sl.url_id) as unique_urls,
-    MIN(sl.discovered_at) as first_discovered,
-    MAX(sl.discovered_at) as last_discovered,
+    COUNT(DISTINCT us.url_id) as unique_urls,
+    MIN(us.discovered_at) as first_discovered,
+    MAX(us.discovered_at) as last_discovered,
     -- Count URLs by status
     COUNT(CASE WHEN f.status = 'done' THEN 1 END) as crawled_urls,
     COUNT(CASE WHEN f.status = 'queued' THEN 1 END) as queued_urls,
-    COUNT(CASE WHEN f.status IS NULL THEN 1 END) as not_in_frontier,
-    -- Count URLs by HTTP status
-    COUNT(CASE WHEN p.status = 200 THEN 1 END) as successful_urls,
-    COUNT(CASE WHEN p.status >= 400 THEN 1 END) as error_urls
-FROM sitemaps_listed sl
-LEFT JOIN frontier f ON sl.url_id = f.url_id
-LEFT JOIN pages p ON sl.url_id = p.url_id
-GROUP BY sl.sitemap_url
+    COUNT(CASE WHEN f.status IS NULL THEN 1 END) as not_in_frontier
+FROM sitemaps s
+LEFT JOIN url_sitemaps us ON s.id = us.sitemap_id
+LEFT JOIN frontier f ON us.url_id = f.url_id
+GROUP BY s.sitemap_url
 ORDER BY total_urls DESC;
 
--- View for schema.org analysis
-CREATE VIEW IF NOT EXISTS schema_analysis AS
+-- View for comprehensive schema analysis (normalized structure)
+CREATE VIEW IF NOT EXISTS view_schema_analysis AS
+SELECT 
+    u.url,
+    st.type_name as main_entity_type,
+    si.raw_data as main_entity_data,
+    si.is_valid as main_entity_valid,
+    si.validation_errors as main_entity_errors,
+    si.severity as main_entity_severity,
+    psr.position as main_entity_position,
+    psr.discovered_at as main_entity_discovered_at,
+    
+    -- Count of all schema instances on this page
+    (SELECT COUNT(psr2.schema_instance_id) 
+     FROM page_schema_references psr2 
+     WHERE psr2.url_id = u.id) as total_schema_count,
+    
+    -- Count of main entities
+    (SELECT COUNT(*) 
+     FROM page_schema_references psr3 
+     WHERE psr3.url_id = u.id AND psr3.is_main_entity = 1) as main_entity_count,
+    
+    -- Count of related entities (properties)
+    (SELECT COUNT(*) 
+     FROM page_schema_references psr4 
+     WHERE psr4.url_id = u.id AND psr4.is_main_entity = 0) as related_entity_count,
+    
+    -- List of all schema types on this page
+    (SELECT GROUP_CONCAT(st2.type_name, ', ') 
+     FROM page_schema_references psr5
+     JOIN schema_instances si2 ON psr5.schema_instance_id = si2.id
+     JOIN schema_types st2 ON si2.schema_type_id = st2.id
+     WHERE psr5.url_id = u.id) as all_schema_types,
+    
+    -- List of property names
+    (SELECT GROUP_CONCAT(psr6.property_name, ', ') 
+     FROM page_schema_references psr6
+     WHERE psr6.url_id = u.id AND psr6.property_name IS NOT NULL) as property_names
+
+FROM urls u
+LEFT JOIN page_schema_references psr ON u.id = psr.url_id AND psr.is_main_entity = 1
+LEFT JOIN schema_instances si ON psr.schema_instance_id = si.id
+LEFT JOIN schema_types st ON si.schema_type_id = st.id
+WHERE u.id IN (SELECT url_id FROM page_schema_references)
+ORDER BY u.url, psr.position;
+
+-- View for hierarchical schema relationships
+CREATE VIEW IF NOT EXISTS view_schema_hierarchy AS
 SELECT 
     u.url,
     st.type_name as schema_type,
-    sd.format,
-    sd.position,
-    sd.is_valid,
-    sd.validation_errors,
-    sd.discovered_at,
-    sd.raw_data,
-    sd.parsed_data
-FROM schema_data sd
-JOIN urls u ON sd.url_id = u.id
-JOIN schema_types st ON sd.schema_type_id = st.id
-WHERE u.classification IN ('internal', 'network')
-ORDER BY u.url, sd.position;
+    si.raw_data as schema_data,
+    si.is_valid,
+    si.validation_errors,
+    si.severity,
+    psr.position,
+    psr.is_main_entity,
+    psr.property_name,
+    psr.parent_entity_id,
+    
+    -- Parent entity info
+    parent_st.type_name as parent_entity_type,
+    parent_si.raw_data as parent_entity_data,
+    
+    -- Child entities count
+    (SELECT COUNT(*) 
+     FROM page_schema_references child_psr
+     WHERE child_psr.parent_entity_id = psr.schema_instance_id) as child_count,
+    
+    -- Sibling entities count (same parent)
+    (SELECT COUNT(*) 
+     FROM page_schema_references sibling_psr
+     WHERE sibling_psr.parent_entity_id = psr.parent_entity_id 
+     AND sibling_psr.schema_instance_id != psr.schema_instance_id) as sibling_count
+
+FROM urls u
+JOIN page_schema_references psr ON u.id = psr.url_id
+JOIN schema_instances si ON psr.schema_instance_id = si.id
+JOIN schema_types st ON si.schema_type_id = st.id
+LEFT JOIN schema_instances parent_si ON psr.parent_entity_id = parent_si.id
+LEFT JOIN schema_types parent_st ON parent_si.schema_type_id = parent_st.id
+ORDER BY u.url, psr.is_main_entity DESC, psr.position;
 
 -- Comprehensive crawl status view
-CREATE VIEW IF NOT EXISTS crawl_status AS
+CREATE VIEW IF NOT EXISTS view_crawl_status AS
 WITH sitemap_stats AS (
     SELECT 
-        COUNT(DISTINCT sitemap_url) as sitemaps_scraped,
+        COUNT(DISTINCT s.id) as sitemaps_scraped,
         COUNT(*) as urls_in_sitemaps
-    FROM sitemaps_listed
+    FROM sitemaps s
+    JOIN url_sitemaps us ON s.id = us.sitemap_id
 ),
 url_classification_stats AS (
     SELECT 
@@ -628,19 +794,19 @@ indexability_stats AS (
 sitemap_coverage AS (
     SELECT 
         COUNT(DISTINCT u.id) as internal_urls_total,
-        COUNT(DISTINCT sl.url_id) as internal_urls_in_sitemap,
-        COUNT(DISTINCT u.id) - COUNT(DISTINCT sl.url_id) as internal_urls_not_in_sitemap
+        COUNT(DISTINCT us.url_id) as internal_urls_in_sitemap,
+        COUNT(DISTINCT u.id) - COUNT(DISTINCT us.url_id) as internal_urls_not_in_sitemap
     FROM urls u
-    LEFT JOIN sitemaps_listed sl ON u.id = sl.url_id
+    LEFT JOIN url_sitemaps us ON u.id = us.url_id
     WHERE u.classification IN ('internal', 'network')
 ),
 sitemap_orphans AS (
     SELECT 
-        COUNT(DISTINCT sl.url_id) as sitemap_urls_total,
+        COUNT(DISTINCT us.url_id) as sitemap_urls_total,
         COUNT(DISTINCT c.url_id) as sitemap_urls_crawled,
-        COUNT(DISTINCT sl.url_id) - COUNT(DISTINCT c.url_id) as sitemap_urls_not_crawled
-    FROM sitemaps_listed sl
-    LEFT JOIN content c ON sl.url_id = c.url_id
+        COUNT(DISTINCT us.url_id) - COUNT(DISTINCT c.url_id) as sitemap_urls_not_crawled
+    FROM url_sitemaps us
+    LEFT JOIN content c ON us.url_id = c.url_id
 )
 SELECT 
     -- Sitemap statistics
@@ -709,7 +875,7 @@ async def init_crawl_db(db_path: str = CRAWL_DB_PATH):
 
 # ------------------ URL classification ------------------
 
-def classify_url(url: str, base_domain: str, is_from_sitemap: bool = False) -> str:
+def classify_url(url: str, base_domain: str, is_from_sitemap: bool = False, is_from_hreflang: bool = False) -> str:
     """Classify URL as internal, network, external, or social."""
     from urllib.parse import urlparse
     
@@ -739,8 +905,8 @@ def classify_url(url: str, base_domain: str, is_from_sitemap: bool = False) -> s
     if url_domain == base_domain:
         return 'internal'
     
-    # If it's from a sitemap and not internal, classify as network
-    if is_from_sitemap:
+    # Network URLs are those found in hreflang (sitemap, HTTP headers, or page head)
+    if is_from_hreflang:
         return 'network'
     
     # Everything else is external
@@ -748,25 +914,43 @@ def classify_url(url: str, base_domain: str, is_from_sitemap: bool = False) -> s
 
 # ------------------ URL ID management ------------------
 
-async def get_or_create_url_id(url: str, base_domain: str, db_path: str = CRAWL_DB_PATH) -> int:
+async def get_or_create_url_id(url: str, base_domain: str, db_path: str = CRAWL_DB_PATH, conn: aiosqlite.Connection = None, is_from_hreflang: bool = False) -> int:
     """Get URL ID, creating the URL record if it doesn't exist."""
-    async with aiosqlite.connect(db_path) as db:
-        # Try to get existing URL ID
-        cursor = await db.execute("SELECT id FROM urls WHERE url = ?", (url,))
+    if conn:
+        # Use existing connection
+        cursor = await conn.execute("SELECT id FROM urls WHERE url = ?", (url,))
         row = await cursor.fetchone()
         if row:
             return row[0]
         
         # Classify the URL
-        classification = classify_url(url, base_domain)
+        classification = classify_url(url, base_domain, is_from_hreflang=is_from_hreflang)
         
         # Create new URL record
-        cursor = await db.execute(
+        cursor = await conn.execute(
             "INSERT INTO urls (url, classification, first_seen, last_seen) VALUES (?, ?, ?, ?)",
             (url, classification, int(time.time()), int(time.time()))
         )
-        await db.commit()
         return cursor.lastrowid
+    else:
+        # Create new connection
+        async with aiosqlite.connect(db_path) as db:
+            # Try to get existing URL ID
+            cursor = await db.execute("SELECT id FROM urls WHERE url = ?", (url,))
+            row = await cursor.fetchone()
+            if row:
+                return row[0]
+            
+            # Classify the URL
+            classification = classify_url(url, base_domain, is_from_hreflang=is_from_hreflang)
+            
+            # Create new URL record
+            cursor = await db.execute(
+                "INSERT INTO urls (url, classification, first_seen, last_seen) VALUES (?, ?, ?, ?)",
+                (url, classification, int(time.time()), int(time.time()))
+            )
+            await db.commit()
+            return cursor.lastrowid
 
 async def get_url_by_id(url_id: int, db_path: str = CRAWL_DB_PATH) -> str | None:
     """Get URL string by ID."""
@@ -796,36 +980,76 @@ async def get_conditional_headers(url: str, base_domain: str, pages_db_path: str
 
 # ------------------ writers ------------------
 
-async def write_page(url: str, final_url: str, status: int, headers: dict, html: str, base_domain: str, pages_db_path: str = PAGES_DB_PATH, crawl_db_path: str = CRAWL_DB_PATH):
+async def write_page(url: str, final_url: str, status: int, headers: dict, html: str, base_domain: str, pages_db_path: str = PAGES_DB_PATH, crawl_db_path: str = CRAWL_DB_PATH, redirect_chain_json: str = None):
     now = int(time.time())
     
     # Get URL IDs
     url_id = await get_or_create_url_id(url, base_domain, crawl_db_path)
     final_url_id = await get_or_create_url_id(final_url, base_domain, crawl_db_path) if final_url != url else url_id
     
+    # Extract initial status code and redirect destination from redirect chain
+    initial_status_code = status  # Default to final status if no redirect chain
+    redirect_destination_url_id = None
+    
+    if redirect_chain_json:
+        try:
+            redirect_chain = json.loads(redirect_chain_json)
+            if redirect_chain:
+                # First step in chain is the initial request
+                initial_status_code = redirect_chain[0].get('status', status)
+                
+                # If there's a redirect (301, 302, etc.), find the destination
+                if initial_status_code in [301, 302, 303, 307, 308]:
+                    # Look for Location header in the first redirect response
+                    first_response_headers = redirect_chain[0].get('headers', {})
+                    location = first_response_headers.get('location')
+                    if location:
+                        # Normalize the redirect destination URL
+                        from urllib.parse import urljoin
+                        redirect_destination = urljoin(url, location)
+                        redirect_destination_url_id = await get_or_create_url_id(redirect_destination, base_domain, crawl_db_path)
+        except (json.JSONDecodeError, KeyError, IndexError):
+            # If parsing fails, use defaults
+            pass
+    
     # Extract ETag and Last-Modified from headers
     etag = headers.get('etag', '').strip('"') if headers.get('etag') else None
     last_modified = headers.get('last-modified', '').strip() if headers.get('last-modified') else None
     
+    # Store HTML and headers in pages database
     async with aiosqlite.connect(pages_db_path) as db:
         await db.execute(
             """
-        INSERT INTO pages(url_id, final_url_id, status, fetched_at, headers_json, html_compressed, etag, last_modified)
+        INSERT INTO pages(url_id, headers_json, html_compressed)
+        VALUES (?,?,?)
+        ON CONFLICT(url_id) DO UPDATE SET
+          headers_json=excluded.headers_json,
+          html_compressed=excluded.html_compressed
+        """,
+            (url_id, json.dumps(headers, ensure_ascii=False), compress_html(html)),
+        )
+        await db.commit()
+    
+    # Store metadata in crawl database
+    async with aiosqlite.connect(crawl_db_path) as db:
+        await db.execute(
+            """
+        INSERT INTO page_metadata(url_id, initial_status_code, final_status_code, final_url_id, redirect_destination_url_id, fetched_at, etag, last_modified)
         VALUES (?,?,?,?,?,?,?,?)
         ON CONFLICT(url_id) DO UPDATE SET
+          initial_status_code=excluded.initial_status_code,
+          final_status_code=excluded.final_status_code,
           final_url_id=excluded.final_url_id,
-          status=excluded.status,
+          redirect_destination_url_id=excluded.redirect_destination_url_id,
           fetched_at=excluded.fetched_at,
-          headers_json=excluded.headers_json,
-          html_compressed=excluded.html_compressed,
           etag=excluded.etag,
           last_modified=excluded.last_modified
         """,
-            (url_id, final_url_id, status, now, json.dumps(headers, ensure_ascii=False), compress_html(html), etag, last_modified),
+            (url_id, initial_status_code, status, final_url_id, redirect_destination_url_id, now, etag, last_modified),
         )
         await db.commit()
 
-async def upsert_url(url: str, kind: str, base_domain: str, discovered_from: Optional[str] = None, db_path: str = CRAWL_DB_PATH):
+async def upsert_url(url: str, kind: str, base_domain: str, discovered_from: Optional[str] = None, is_from_hreflang: bool = False, db_path: str = CRAWL_DB_PATH):
     now = int(time.time())
     
     # Get discovered_from_id if provided
@@ -834,7 +1058,7 @@ async def upsert_url(url: str, kind: str, base_domain: str, discovered_from: Opt
         discovered_from_id = await get_or_create_url_id(discovered_from, base_domain, db_path)
     
     # Classify the URL
-    classification = classify_url(url, base_domain)
+    classification = classify_url(url, base_domain, is_from_hreflang=is_from_hreflang)
     
     async with aiosqlite.connect(db_path) as db:
         await db.execute(
@@ -853,7 +1077,7 @@ async def upsert_url(url: str, kind: str, base_domain: str, discovered_from: Opt
 
 # ------------------ batch writers ------------------
 
-async def batch_write_pages(pages_data: List[Tuple[str, str, int, dict, str, str]], pages_db_path: str = PAGES_DB_PATH, crawl_db_path: str = CRAWL_DB_PATH, batch_size: int = 50):
+async def batch_write_pages(pages_data: List[Tuple[str, str, int, dict, str, str, str]], pages_db_path: str = PAGES_DB_PATH, crawl_db_path: str = CRAWL_DB_PATH, batch_size: int = 50):
     """Batch write multiple pages for better performance."""
     if not pages_data:
         return
@@ -863,43 +1087,88 @@ async def batch_write_pages(pages_data: List[Tuple[str, str, int, dict, str, str
         batch = pages_data[i:i + batch_size]
         await _batch_write_pages_chunk(batch, pages_db_path, crawl_db_path)
 
-async def _batch_write_pages_chunk(pages_data: List[Tuple[str, str, int, dict, str, str]], pages_db_path: str, crawl_db_path: str):
+async def _batch_write_pages_chunk(pages_data: List[Tuple[str, str, int, dict, str, str, str]], pages_db_path: str, crawl_db_path: str):
     """Write a chunk of pages."""
     
     async with aiosqlite.connect(pages_db_path) as pages_conn, aiosqlite.connect(crawl_db_path) as crawl_conn:
-        # Prepare batch data
-        batch_data = []
-        for url, final_url, status, headers, html, base_domain in pages_data:
+        # Prepare batch data for pages (HTML and headers only)
+        pages_batch_data = []
+        metadata_batch_data = []
+        
+        for url, final_url, status, headers, html, base_domain, redirect_chain_json in pages_data:
             # Get URL IDs
             url_id = await get_or_create_url_id_with_conn(url, base_domain, crawl_db_path, crawl_conn)
             final_url_id = await get_or_create_url_id_with_conn(final_url, base_domain, crawl_db_path, crawl_conn) if final_url != url else url_id
+            
+            # Extract initial status code and redirect destination from redirect chain
+            initial_status_code = status  # Default to final status if no redirect chain
+            redirect_destination_url_id = None
+            
+            if redirect_chain_json:
+                try:
+                    redirect_chain = json.loads(redirect_chain_json)
+                    if redirect_chain:
+                        # First step in chain is the initial request
+                        initial_status_code = redirect_chain[0].get('status', status)
+                        
+                        # If there's a redirect (301, 302, etc.), find the destination
+                        if initial_status_code in [301, 302, 303, 307, 308]:
+                            # Look for Location header in the first redirect response
+                            first_response_headers = redirect_chain[0].get('headers', {})
+                            location = first_response_headers.get('location')
+                            if location:
+                                # Normalize the redirect destination URL
+                                from urllib.parse import urljoin
+                                redirect_destination = urljoin(url, location)
+                                redirect_destination_url_id = await get_or_create_url_id_with_conn(redirect_destination, base_domain, crawl_db_path, crawl_conn)
+                except (json.JSONDecodeError, KeyError, IndexError):
+                    # If parsing fails, use defaults
+                    pass
             
             # Extract ETag and Last-Modified from headers
             etag = headers.get('etag', '').strip('"') if headers.get('etag') else None
             last_modified = headers.get('last-modified', '').strip() if headers.get('last-modified') else None
             
-            batch_data.append((
-                url_id, final_url_id, status, int(time.time()),
-                json.dumps(headers, ensure_ascii=False), compress_html(html), etag, last_modified
+            # Pages data (HTML and headers only)
+            pages_batch_data.append((
+                url_id, json.dumps(headers, ensure_ascii=False), compress_html(html)
+            ))
+            
+            # Metadata data (status, timestamps, etc.)
+            metadata_batch_data.append((
+                url_id, initial_status_code, status, final_url_id, redirect_destination_url_id, int(time.time()), etag, last_modified
             ))
         
-        # Batch insert
+        # Batch insert pages (HTML and headers)
         await pages_conn.executemany(
             """
-            INSERT INTO pages(url_id, final_url_id, status, fetched_at, headers_json, html_compressed, etag, last_modified)
+            INSERT INTO pages(url_id, headers_json, html_compressed)
+            VALUES (?,?,?)
+            ON CONFLICT(url_id) DO UPDATE SET
+              headers_json=excluded.headers_json,
+              html_compressed=excluded.html_compressed
+            """,
+            pages_batch_data
+        )
+        await pages_conn.commit()
+        
+        # Batch insert metadata
+        await crawl_conn.executemany(
+            """
+            INSERT INTO page_metadata(url_id, initial_status_code, final_status_code, final_url_id, redirect_destination_url_id, fetched_at, etag, last_modified)
             VALUES (?,?,?,?,?,?,?,?)
             ON CONFLICT(url_id) DO UPDATE SET
+              initial_status_code=excluded.initial_status_code,
+              final_status_code=excluded.final_status_code,
               final_url_id=excluded.final_url_id,
-              status=excluded.status,
+              redirect_destination_url_id=excluded.redirect_destination_url_id,
               fetched_at=excluded.fetched_at,
-              headers_json=excluded.headers_json,
-              html_compressed=excluded.html_compressed,
               etag=excluded.etag,
               last_modified=excluded.last_modified
             """,
-            batch_data
+            metadata_batch_data
         )
-        await pages_conn.commit()
+        await crawl_conn.commit()
 
 async def batch_upsert_urls(urls_data: List[Tuple], db_path: str = CRAWL_DB_PATH, batch_size: int = 100):
     """Batch upsert multiple URLs for better performance."""
@@ -1018,6 +1287,27 @@ async def _batch_write_content_chunk(content_data: List[Tuple[int, str, str, str
         )
         await conn.commit()
 
+async def add_hreflang_urls_to_frontier(crawl_db_path: str, base_domain: str):
+    """Add hreflang URLs to the frontier for crawling."""
+    async with aiosqlite.connect(crawl_db_path) as conn:
+        # Get all hreflang URLs from both HTML head and sitemap that are not already in the frontier
+        cursor = await conn.execute("""
+            SELECT DISTINCT u.url 
+            FROM (
+                SELECT href_url_id FROM hreflang_html_head
+                UNION
+                SELECT href_url_id FROM hreflang_sitemap
+            ) hreflang_urls
+            JOIN urls u ON hreflang_urls.href_url_id = u.id
+            WHERE u.id NOT IN (SELECT url_id FROM frontier)
+        """)
+        hreflang_urls = await cursor.fetchall()
+        
+        if hreflang_urls:
+            print(f"Adding {len(hreflang_urls)} hreflang URLs to frontier...")
+            for (url,) in hreflang_urls:
+                await frontier_seed(url, base_domain, reset=False, db_path=crawl_db_path, depth=0)
+
 async def batch_write_content_with_url_resolution(content_data: List[Tuple[str, dict, str]], crawl_db_path: str):
     """Write content data with URL ID resolution and normalized tables."""
     if not content_data:
@@ -1090,7 +1380,22 @@ async def batch_write_content_with_url_resolution(content_data: List[Tuple[str, 
                     
                     # Insert canonical URL from HTML head
                     if content_info['canonical_url']:
-                        canonical_url_id = await get_or_create_canonical_url_id(content_info['canonical_url'], base_domain, conn)
+                        canonical_url = content_info['canonical_url']
+                        
+                        # Normalize protocol-relative URLs
+                        normalized_canonical_url = canonical_url
+                        if canonical_url.startswith('//'):
+                            # Convert protocol-relative URL to use the same protocol as the base domain
+                            from urllib.parse import urlparse
+                            if base_domain:
+                                # Use the base domain's protocol
+                                base_protocol = 'https'  # Default to https for modern sites
+                                normalized_canonical_url = f"{base_protocol}:{canonical_url}"
+                            else:
+                                # Fallback to https
+                                normalized_canonical_url = f"https:{canonical_url}"
+                        
+                        canonical_url_id = await get_or_create_canonical_url_id(normalized_canonical_url, base_domain, conn)
                         await conn.execute(
                             """
                             INSERT OR IGNORE INTO canonical_urls(url_id, canonical_url_id, source)
@@ -1098,6 +1403,40 @@ async def batch_write_content_with_url_resolution(content_data: List[Tuple[str, 
                             """,
                             (url_id, canonical_url_id)
                         )
+                    
+                    # Process hreflang URLs from HTML head
+                    if content_info.get('hreflang_urls'):
+                        for hreflang_data in content_info['hreflang_urls']:
+                            hreflang_url = hreflang_data['url']
+                            hreflang_lang = hreflang_data['hreflang']
+                            
+                            # Normalize protocol-relative URLs
+                            normalized_hreflang_url = hreflang_url
+                            if hreflang_url.startswith('//'):
+                                # Convert protocol-relative URL to use the same protocol as the base domain
+                                from urllib.parse import urlparse
+                                if base_domain:
+                                    # Use the base domain's protocol
+                                    base_protocol = 'https'  # Default to https for modern sites
+                                    normalized_hreflang_url = f"{base_protocol}:{hreflang_url}"
+                                else:
+                                    # Fallback to https
+                                    normalized_hreflang_url = f"https:{hreflang_url}"
+                            
+                            # Get or create hreflang language ID
+                            hreflang_lang_id = await get_or_create_hreflang_language_id(hreflang_lang, conn)
+                            
+                            # Get or create target URL ID (classify as network since it's from hreflang)
+                            target_url_id = await get_or_create_url_id(normalized_hreflang_url, base_domain, crawl_db_path, conn, is_from_hreflang=True)
+                            
+                            # Insert hreflang HTML head data
+                            await conn.execute(
+                                """
+                                INSERT OR IGNORE INTO hreflang_html_head(url_id, hreflang_id, href_url_id)
+                                VALUES (?, ?, ?)
+                                """,
+                                (url_id, hreflang_lang_id, target_url_id)
+                            )
                     
                     # Calculate indexability
                     html_meta_allows = not any('noindex' in d for d in content_info['html_meta_directives'])
@@ -1114,6 +1453,25 @@ async def batch_write_content_with_url_resolution(content_data: List[Tuple[str, 
                     robots_txt_directives = []
                     if not robots_txt_allows:
                         robots_txt_directives.append('disallow')
+                    
+                    # Check if URL is self-canonical
+                    cursor = await conn.execute("SELECT canonical_url_id FROM canonical_urls WHERE url_id = ?", (url_id,))
+                    canonical_row = await cursor.fetchone()
+                    is_self_canonical = canonical_row and canonical_row[0] == url_id
+                    
+                    # Get initial status code from page_metadata table in crawl database
+                    cursor = await conn.execute("SELECT initial_status_code FROM page_metadata WHERE url_id = ?", (url_id,))
+                    page_row = await cursor.fetchone()
+                    initial_status_code = page_row[0] if page_row else None
+                    
+                    # Calculate overall indexability: only true if initial_status=200, self canonical, and no restrictions
+                    overall_indexable = (
+                        initial_status_code == 200 and 
+                        is_self_canonical and 
+                        robots_txt_allows and 
+                        html_meta_allows and 
+                        http_header_allows
+                    )
                     
                     # Insert/update indexability summary
                     await conn.execute(
@@ -1138,36 +1496,14 @@ async def batch_write_content_with_url_resolution(content_data: List[Tuple[str, 
                             json.dumps(robots_txt_directives, ensure_ascii=False),
                             json.dumps(content_info['html_meta_directives'], ensure_ascii=False),
                             json.dumps(content_info['http_header_directives'], ensure_ascii=False),
-                            robots_txt_allows and html_meta_allows and http_header_allows  # Overall indexable
+                            overall_indexable
                         )
                     )
                     
-                    # Process schema data if present
+                    # Process schema data if present - use new normalized structure
                     if content_info.get('schema_data'):
-                        schema_records = []
-                        for schema_item in content_info['schema_data']:
-                            # Get or create schema type ID using the same connection
-                            schema_type_id = await get_or_create_schema_type_id(crawl_db_path, schema_item['type'], conn)
-                            
-                            schema_records.append((
-                                url_id,
-                                schema_type_id,
-                                schema_item['format'],
-                                schema_item['raw_data'],
-                                schema_item['parsed_data'],
-                                schema_item['position'],
-                                schema_item['is_valid'],
-                                json.dumps(schema_item['validation_errors']) if schema_item['validation_errors'] else None,
-                                int(time.time())
-                            ))
-                        
-                        # Batch insert schema data
-                        if schema_records:
-                            await conn.executemany("""
-                                INSERT INTO schema_data 
-                                (url_id, schema_type_id, format, raw_data, parsed_data, position, is_valid, validation_errors, discovered_at)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """, schema_records)
+                        # Use the new normalized schema storage with existing connection
+                        await create_page_schema_references_with_conn(url_id, content_info['schema_data'], conn)
                 
                 await conn.commit()
                 break  # Success, exit retry loop
@@ -1210,50 +1546,50 @@ async def batch_write_internal_links(links_data: List[Tuple[str, list, str]], cr
                         
                         # Parse URL components
                         url_components = parse_url_components(href_original, source_url)
-                
-                # Get or create normalized IDs
-                anchor_text_id = await get_or_create_anchor_text_id(link_info['anchor_text'], conn)
-                xpath_id = await get_or_create_xpath_id(link_info['xpath'], conn)
-                href_url_id = await get_or_create_href_url_id(url_components['href'], base_domain, conn)
-                
-                # Try to get target URL ID (may not exist yet)
-                target_url_id = None
-                if url_components['href']:
-                    cursor = await conn.execute("SELECT id FROM urls WHERE url = ?", (url_components['href'],))
-                    row = await cursor.fetchone()
-                    if row:
-                        target_url_id = row[0]
-                
-                # Classify the link
-                classification = classify_url(target_url, base_domain)
-                
-                if classification == 'internal':
-                    internal_count += 1
-                    internal_unique.add(url_components['href'])
-                    
-                    # Insert internal link with fully normalized references
-                    await conn.execute(
-                        """
-                        INSERT OR IGNORE INTO internal_links(
-                            source_url_id, target_url_id, anchor_text_id, xpath_id, href_url_id,
-                            url_fragment, url_parameters, discovered_at
-                        )
-                        VALUES (?,?,?,?,?,?,?,?)
-                        """,
-                        (
-                            source_url_id,
-                            target_url_id,
-                            anchor_text_id,
-                            xpath_id,
-                            href_url_id,
-                            url_components['url_fragment'],
-                            url_components['url_parameters'],
-                            now
-                        )
-                    )
-                else:
-                    external_count += 1
-                    external_unique.add(url_components['href'])
+                        
+                        # Get or create normalized IDs
+                        anchor_text_id = await get_or_create_anchor_text_id(link_info['anchor_text'], conn)
+                        xpath_id = await get_or_create_xpath_id(link_info['xpath'], conn)
+                        href_url_id = await get_or_create_href_url_id(url_components['href'], base_domain, conn)
+                        
+                        # Try to get target URL ID (may not exist yet)
+                        target_url_id = None
+                        if url_components['href']:
+                            cursor = await conn.execute("SELECT id FROM urls WHERE url = ?", (url_components['href'],))
+                            row = await cursor.fetchone()
+                            if row:
+                                target_url_id = row[0]
+                        
+                        # Classify the link
+                        classification = classify_url(target_url, base_domain)
+                        
+                        if classification == 'internal':
+                            internal_count += 1
+                            internal_unique.add(url_components['href'])
+                            
+                            # Insert internal link with fully normalized references
+                            await conn.execute(
+                                """
+                                INSERT OR IGNORE INTO internal_links(
+                                    source_url_id, target_url_id, anchor_text_id, xpath_id, href_url_id,
+                                    url_fragment, url_parameters, discovered_at
+                                )
+                                VALUES (?,?,?,?,?,?,?,?)
+                                """,
+                                (
+                                    source_url_id,
+                                    target_url_id,
+                                    anchor_text_id,
+                                    xpath_id,
+                                    href_url_id,
+                                    url_components['url_fragment'],
+                                    url_components['url_parameters'],
+                                    now
+                                )
+                            )
+                        else:
+                            external_count += 1
+                            external_unique.add(url_components['href'])
                     
                     # Update content table with link counts
                     await conn.execute(
@@ -1308,18 +1644,31 @@ async def get_or_create_href_url_id(href: str, base_domain: str, conn: aiosqlite
     """Get or create href URL ID in the urls table."""
     import time
     
+    # Normalize protocol-relative URLs
+    normalized_href = href
+    if href.startswith('//'):
+        # Convert protocol-relative URL to use the same protocol as the base domain
+        from urllib.parse import urlparse
+        if base_domain:
+            # Use the base domain's protocol
+            base_protocol = 'https'  # Default to https for modern sites
+            normalized_href = f"{base_protocol}:{href}"
+        else:
+            # Fallback to https
+            normalized_href = f"https:{href}"
+    
     # First try to get existing URL ID
-    cursor = await conn.execute("SELECT id FROM urls WHERE url = ?", (href,))
+    cursor = await conn.execute("SELECT id FROM urls WHERE url = ?", (normalized_href,))
     row = await cursor.fetchone()
     if row:
         return row[0]
     
     # If not found, create new URL entry
-    classification = classify_url(href, base_domain)
+    classification = classify_url(normalized_href, base_domain)
     now = int(time.time())
     cursor = await conn.execute(
         "INSERT INTO urls (url, classification, first_seen, last_seen) VALUES (?, ?, ?, ?)",
-        (href, classification, now, now)
+        (normalized_href, classification, now, now)
     )
     return cursor.lastrowid
 
@@ -1327,18 +1676,31 @@ async def get_or_create_canonical_url_id(canonical_url: str, base_domain: str, c
     """Get or create canonical URL ID in the urls table."""
     import time
     
+    # Normalize protocol-relative URLs
+    normalized_canonical_url = canonical_url
+    if canonical_url.startswith('//'):
+        # Convert protocol-relative URL to use the same protocol as the base domain
+        from urllib.parse import urlparse
+        if base_domain:
+            # Use the base domain's protocol
+            base_protocol = 'https'  # Default to https for modern sites
+            normalized_canonical_url = f"{base_protocol}:{canonical_url}"
+        else:
+            # Fallback to https
+            normalized_canonical_url = f"https:{canonical_url}"
+    
     # First try to get existing URL ID
-    cursor = await conn.execute("SELECT id FROM urls WHERE url = ?", (canonical_url,))
+    cursor = await conn.execute("SELECT id FROM urls WHERE url = ?", (normalized_canonical_url,))
     row = await cursor.fetchone()
     if row:
         return row[0]
     
     # If not found, create new URL entry
-    classification = classify_url(canonical_url, base_domain)
+    classification = classify_url(normalized_canonical_url, base_domain)
     now = int(time.time())
     cursor = await conn.execute(
         "INSERT INTO urls (url, classification, first_seen, last_seen) VALUES (?, ?, ?, ?)",
-        (canonical_url, classification, now, now)
+        (normalized_canonical_url, classification, now, now)
     )
     return cursor.lastrowid
 
@@ -1590,13 +1952,26 @@ async def print_crawl_status(crawl_db_path: str):
     
     print("="*80)
 
-async def batch_write_hreflang_sitemap_data(hreflang_data: List[Tuple[str, str, str]], crawl_db_path: str):
+async def batch_write_hreflang_sitemap_data(hreflang_data: List[Tuple[str, str, str]], crawl_db_path: str, base_domain: str = None):
     """Write hreflang data from sitemaps to the normalized database structure."""
     if not hreflang_data:
         return
     
     async with aiosqlite.connect(crawl_db_path) as conn:
         for url, hreflang, href_url in hreflang_data:
+            # Normalize protocol-relative URLs
+            normalized_href_url = href_url
+            if href_url.startswith('//'):
+                # Convert protocol-relative URL to use the same protocol as the base domain
+                from urllib.parse import urlparse
+                if base_domain:
+                    # Use the base domain's protocol
+                    base_protocol = 'https'  # Default to https for modern sites
+                    normalized_href_url = f"{base_protocol}:{href_url}"
+                else:
+                    # Fallback to https
+                    normalized_href_url = f"https:{href_url}"
+            
             # Get source URL ID
             cursor = await conn.execute("SELECT id FROM urls WHERE url = ?", (url,))
             source_row = await cursor.fetchone()
@@ -1606,26 +1981,28 @@ async def batch_write_hreflang_sitemap_data(hreflang_data: List[Tuple[str, str, 
             source_url_id = source_row[0]
             
             # Get target URL ID (create if doesn't exist)
-            cursor = await conn.execute("SELECT id FROM urls WHERE url = ?", (href_url,))
+            cursor = await conn.execute("SELECT id FROM urls WHERE url = ?", (normalized_href_url,))
             target_row = await cursor.fetchone()
             if not target_row:
                 # Create the target URL if it doesn't exist
                 from urllib.parse import urlparse
-                parsed = urlparse(href_url)
-                base_domain = parsed.netloc
+                parsed = urlparse(normalized_href_url)
+                href_domain = parsed.netloc
+                # Use the original crawl domain for classification, not the hreflang URL's domain
+                crawl_domain = base_domain or href_domain
                 # Classify as network since it's from sitemap hreflang data
-                classification = classify_url(href_url, base_domain, is_from_sitemap=True)
+                classification = classify_url(normalized_href_url, crawl_domain, is_from_hreflang=True)
                 await conn.execute(
                     """
                     INSERT INTO urls(url, kind, classification, first_seen, last_seen)
                     VALUES (?, 'other', ?, ?, ?)
                     """,
-                    (href_url, classification, int(__import__('time').time()), int(__import__('time').time()))
+                    (normalized_href_url, classification, int(__import__('time').time()), int(__import__('time').time()))
                 )
                 await conn.commit()
                 
                 # Get the newly created URL ID
-                cursor = await conn.execute("SELECT id FROM urls WHERE url = ?", (href_url,))
+                cursor = await conn.execute("SELECT id FROM urls WHERE url = ?", (normalized_href_url,))
                 target_row = await cursor.fetchone()
                 if not target_row:
                     continue
@@ -1646,30 +2023,52 @@ async def batch_write_hreflang_sitemap_data(hreflang_data: List[Tuple[str, str, 
         
         await conn.commit()
 
-async def batch_write_sitemaps_listed(sitemap_urls: List[Tuple[str, str, int]], crawl_db_path: str):
-    """Write sitemap tracking records for discovered URLs."""
-    if not sitemap_urls:
+async def batch_write_sitemaps_and_urls(sitemap_data: List[Tuple[str, List[Tuple[str, int]]]], crawl_db_path: str):
+    """Write sitemap records and URL-sitemap relationships."""
+    if not sitemap_data:
         return
     
     async with aiosqlite.connect(crawl_db_path) as conn:
         now = int(time.time())
-        for url, sitemap_url, position in sitemap_urls:
-            # Get URL ID
-            cursor = await conn.execute("SELECT id FROM urls WHERE url = ?", (url,))
-            row = await cursor.fetchone()
-            if not row:
-                continue
-            
-            url_id = row[0]
-            
-            # Insert sitemap tracking record
-            await conn.execute(
-                """
-                INSERT OR IGNORE INTO sitemaps_listed(url_id, sitemap_url, sitemap_position, discovered_at)
-                VALUES (?,?,?,?)
-                """,
-                (url_id, sitemap_url, position, now)
+        
+        for sitemap_url, url_positions in sitemap_data:
+            # Insert or get sitemap ID
+            cursor = await conn.execute(
+                "INSERT OR IGNORE INTO sitemaps (sitemap_url, discovered_at, last_crawled_at, total_urls_found) VALUES (?, ?, ?, ?)",
+                (sitemap_url, now, now, len(url_positions))
             )
+            
+            # Get sitemap ID
+            cursor = await conn.execute("SELECT id FROM sitemaps WHERE sitemap_url = ?", (sitemap_url,))
+            sitemap_row = await cursor.fetchone()
+            if not sitemap_row:
+                continue
+            sitemap_id = sitemap_row[0]
+            
+            # Update total URLs found
+            await conn.execute(
+                "UPDATE sitemaps SET total_urls_found = ?, last_crawled_at = ? WHERE id = ?",
+                (len(url_positions), now, sitemap_id)
+            )
+            
+            # Insert URL-sitemap relationships
+            for url, position in url_positions:
+                # Get URL ID
+                cursor = await conn.execute("SELECT id FROM urls WHERE url = ?", (url,))
+                url_row = await cursor.fetchone()
+                if not url_row:
+                    continue
+                
+                url_id = url_row[0]
+                
+                # Insert URL-sitemap relationship
+                await conn.execute(
+                    """
+                    INSERT OR IGNORE INTO url_sitemaps(url_id, sitemap_id, position, discovered_at)
+                    VALUES (?,?,?,?)
+                    """,
+                    (url_id, sitemap_id, position, now)
+                )
         
         await conn.commit()
 
@@ -1727,7 +2126,7 @@ async def batch_write_redirects(redirect_data: List[Tuple[str, str, str, int, in
         await conn.commit()
 
 # Helper function for get_or_create_url_id with connection
-async def get_or_create_url_id_with_conn(url: str, base_domain: str, db_path: str, conn: aiosqlite.Connection) -> int:
+async def get_or_create_url_id_with_conn(url: str, base_domain: str, db_path: str, conn: aiosqlite.Connection, discovered_from: str = None, is_from_hreflang: bool = False) -> int:
     """Get URL ID, creating the URL record if it doesn't exist (with existing connection)."""
     # Try to get existing URL ID
     cursor = await conn.execute("SELECT id FROM urls WHERE url = ?", (url,))
@@ -1735,13 +2134,18 @@ async def get_or_create_url_id_with_conn(url: str, base_domain: str, db_path: st
     if row:
         return row[0]
     
+    # Get discovered_from_id if provided
+    discovered_from_id = None
+    if discovered_from:
+        discovered_from_id = await get_or_create_url_id_with_conn(discovered_from, base_domain, db_path, conn)
+    
     # Classify the URL
-    classification = classify_url(url, base_domain)
+    classification = classify_url(url, base_domain, is_from_hreflang=is_from_hreflang)
     
     # Create new URL record
     cursor = await conn.execute(
-        "INSERT INTO urls (url, classification, first_seen, last_seen) VALUES (?, ?, ?, ?)",
-        (url, classification, int(time.time()), int(time.time()))
+        "INSERT INTO urls (url, classification, discovered_from_id, first_seen, last_seen) VALUES (?, ?, ?, ?, ?)",
+        (url, classification, discovered_from_id, int(time.time()), int(time.time()))
     )
     return cursor.lastrowid
 
@@ -1975,6 +2379,203 @@ async def frontier_stats(db_path: str = CRAWL_DB_PATH) -> Tuple[int, int]:
 
 # ------------------ Schema.org functions ------------------
 
+async def get_or_create_schema_instance(schema_data: Dict[str, Any], db_path: str = CRAWL_DB_PATH, conn: aiosqlite.Connection = None) -> int:
+    """Get or create a schema instance and return its ID."""
+    content_hash = schema_data.get('content_hash', '')
+    if not content_hash:
+        # If no hash provided, create one
+        from .schema import create_schema_content_hash
+        parsed_data_str = schema_data.get('parsed_data', '{}')
+        if parsed_data_str is None:
+            parsed_data_str = '{}'
+        parsed_data = json.loads(parsed_data_str)
+        content_hash = create_schema_content_hash(parsed_data)
+    
+    if conn:
+        # Use existing connection
+        cur = await conn.execute(
+            "SELECT id FROM schema_instances WHERE content_hash = ?",
+            (content_hash,)
+        )
+        existing = await cur.fetchone()
+        
+        if existing:
+            return existing[0]
+        
+        # Create new instance
+        schema_type_id = await get_or_create_schema_type_id(db_path, schema_data['type'], conn)
+        
+        await conn.execute("""
+            INSERT INTO schema_instances 
+            (content_hash, schema_type_id, format, raw_data, parsed_data, is_valid, validation_errors, severity, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            content_hash,
+            schema_type_id,
+            schema_data['format'],
+            schema_data['raw_data'],
+            schema_data.get('parsed_data'),
+            schema_data.get('is_valid', True),
+            json.dumps(schema_data.get('validation_errors', [])),
+            schema_data.get('severity', 'info'),
+            int(time.time())
+        ))
+        
+        # Get the new instance ID
+        cur = await conn.execute(
+            "SELECT id FROM schema_instances WHERE content_hash = ?",
+            (content_hash,)
+        )
+        result = await cur.fetchone()
+        return result[0]
+    else:
+        # Create new connection
+        async with aiosqlite.connect(db_path) as db:
+            # Check if instance already exists
+            cur = await db.execute(
+                "SELECT id FROM schema_instances WHERE content_hash = ?",
+                (content_hash,)
+            )
+            existing = await cur.fetchone()
+            
+            if existing:
+                return existing[0]
+            
+            # Create new instance
+            schema_type_id = await get_or_create_schema_type_id(db_path, schema_data['type'], db)
+            
+            await db.execute("""
+                INSERT INTO schema_instances 
+                (content_hash, schema_type_id, format, raw_data, parsed_data, is_valid, validation_errors, severity, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                content_hash,
+                schema_type_id,
+                schema_data['format'],
+                schema_data['raw_data'],
+                schema_data.get('parsed_data'),
+                schema_data.get('is_valid', True),
+                json.dumps(schema_data.get('validation_errors', [])),
+                schema_data.get('severity', 'info'),
+                int(time.time())
+            ))
+            
+            await db.commit()
+            
+            # Get the new instance ID
+            cur = await db.execute(
+                "SELECT id FROM schema_instances WHERE content_hash = ?",
+                (content_hash,)
+            )
+            result = await cur.fetchone()
+            return result[0]
+
+
+async def create_page_schema_references_with_conn(url_id: int, schema_items: List[Dict[str, Any]], conn: aiosqlite.Connection) -> None:
+    """Create page schema references with hierarchical relationships using existing connection."""
+    from .schema import identify_schema_relationships
+    
+    # Identify relationships
+    relationships = identify_schema_relationships(schema_items)
+    main_entity = relationships['main_entity']
+    properties = relationships['properties']
+    related_entities = relationships['related_entities']
+    
+    now = int(time.time())
+    
+    # Create reference for main entity
+    if main_entity:
+        main_instance_id = await get_or_create_schema_instance(main_entity, "", conn)
+        await conn.execute("""
+            INSERT INTO page_schema_references 
+            (url_id, schema_instance_id, position, is_main_entity, discovered_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (url_id, main_instance_id, main_entity.get('position', 0), True, now))
+        
+        # Get the last inserted row ID
+        cursor = await conn.execute("SELECT last_insert_rowid()")
+        main_ref_id = (await cursor.fetchone())[0]
+        
+        # Create references for properties (linked to main entity)
+        for prop in properties:
+            prop_instance_id = await get_or_create_schema_instance(prop, "", conn)
+            await conn.execute("""
+                INSERT INTO page_schema_references 
+                (url_id, schema_instance_id, position, property_name, is_main_entity, parent_entity_id, discovered_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                url_id, 
+                prop_instance_id, 
+                prop.get('position', 0), 
+                prop.get('type', '').lower(), 
+                False, 
+                main_ref_id, 
+                now
+            ))
+    
+    # Create references for related entities (standalone)
+    for entity in related_entities:
+        entity_instance_id = await get_or_create_schema_instance(entity, "", conn)
+        await conn.execute("""
+            INSERT INTO page_schema_references 
+            (url_id, schema_instance_id, position, is_main_entity, discovered_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (url_id, entity_instance_id, entity.get('position', 0), False, now))
+
+
+async def create_page_schema_references(url_id: int, schema_items: List[Dict[str, Any]], db_path: str = CRAWL_DB_PATH) -> None:
+    """Create page schema references with hierarchical relationships."""
+    from .schema import identify_schema_relationships
+    
+    # Identify relationships
+    relationships = identify_schema_relationships(schema_items)
+    main_entity = relationships['main_entity']
+    properties = relationships['properties']
+    related_entities = relationships['related_entities']
+    
+    async with aiosqlite.connect(db_path) as db:
+        now = int(time.time())
+        
+        # Create reference for main entity
+        if main_entity:
+            main_instance_id = await get_or_create_schema_instance(main_entity, db_path, db)
+            await db.execute("""
+                INSERT INTO page_schema_references 
+                (url_id, schema_instance_id, position, is_main_entity, discovered_at)
+                VALUES (?, ?, ?, ?, ?)
+            """, (url_id, main_instance_id, main_entity.get('position', 0), True, now))
+            
+            main_ref_id = db.lastrowid
+            
+            # Create references for properties (linked to main entity)
+            for prop in properties:
+                prop_instance_id = await get_or_create_schema_instance(prop, db_path, db)
+                await db.execute("""
+                    INSERT INTO page_schema_references 
+                    (url_id, schema_instance_id, position, property_name, is_main_entity, parent_entity_id, discovered_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    url_id, 
+                    prop_instance_id, 
+                    prop.get('position', 0), 
+                    prop.get('type', '').lower(), 
+                    False, 
+                    main_ref_id, 
+                    now
+                ))
+        
+        # Create references for related entities (standalone)
+        for entity in related_entities:
+            entity_instance_id = await get_or_create_schema_instance(entity, db_path, db)
+            await db.execute("""
+                INSERT INTO page_schema_references 
+                (url_id, schema_instance_id, position, is_main_entity, discovered_at)
+                VALUES (?, ?, ?, ?, ?)
+            """, (url_id, entity_instance_id, entity.get('position', 0), False, now))
+        
+        await db.commit()
+
+
 async def get_or_create_schema_type_id(crawl_db_path: str, type_name: str, conn: aiosqlite.Connection = None) -> int:
     """Get or create a schema type ID."""
     if conn:
@@ -2013,48 +2614,25 @@ async def get_or_create_schema_type_id(crawl_db_path: str, type_name: str, conn:
 
 
 async def batch_write_schema_data(schema_data_list: List[Dict[str, Any]], crawl_db_path: str):
-    """Write schema data to database in batch."""
+    """Write schema data to database in batch using normalized structure."""
     if not schema_data_list:
         return
     
-    async with aiosqlite.connect(crawl_db_path) as db:
-        # Get URL IDs for all URLs
-        url_ids = {}
-        for item in schema_data_list:
-            url = item['url']
-            if url not in url_ids:
-                cursor = await db.execute("SELECT id FROM urls WHERE url = ?", (url,))
-                result = await cursor.fetchone()
-                if result:
-                    url_ids[url] = result[0]
-        
-        # Prepare schema data for insertion
-        schema_records = []
-        for item in schema_data_list:
-            url_id = url_ids.get(item['url'])
-            if not url_id:
-                continue
-            
-            # Get or create schema type ID
-            schema_type_id = await get_or_create_schema_type_id(crawl_db_path, item['type'])
-            
-            schema_records.append((
-                url_id,
-                schema_type_id,
-                item['format'],
-                item['raw_data'],
-                item['parsed_data'],
-                item['position'],
-                item['is_valid'],
-                json.dumps(item['validation_errors']) if item['validation_errors'] else None,
-                int(time.time())
-            ))
-        
-        # Batch insert schema data
-        if schema_records:
-            await db.executemany("""
-                INSERT INTO schema_data 
-                (url_id, schema_type_id, format, raw_data, parsed_data, position, is_valid, validation_errors, discovered_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, schema_records)
-            await db.commit()
+    # Group schema data by URL
+    url_schemas = {}
+    for item in schema_data_list:
+        url = item['url']
+        if url not in url_schemas:
+            url_schemas[url] = []
+        url_schemas[url].append(item)
+    
+    # Process each URL's schema data
+    for url, schema_items in url_schemas.items():
+        # Get URL ID
+        async with aiosqlite.connect(crawl_db_path) as db:
+            cursor = await db.execute("SELECT id FROM urls WHERE url = ?", (url,))
+            result = await cursor.fetchone()
+            if result:
+                url_id = result[0]
+                # Use the new normalized schema storage
+                await create_page_schema_references(url_id, schema_items, crawl_db_path)
