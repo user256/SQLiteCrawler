@@ -44,6 +44,9 @@ class HttpConfig:
     delay_decrease_factor: float = float(os.getenv("SQLITECRAWLER_DELAY_DECREASE", "0.9"))
     # Conditional requests configuration
     enable_conditional_requests: bool = os.getenv("SQLITECRAWLER_CONDITIONAL_REQUESTS", "1") == "1"
+    # Cache TTL configuration
+    robots_ttl: int = int(os.getenv("SQLITECRAWLER_ROBOTS_TTL", "86400"))  # 24 hours
+    sitemap_ttl: int = int(os.getenv("SQLITECRAWLER_SITEMAP_TTL", "3600"))  # 1 hour
     # Authentication configuration
     auth: AuthConfig = None
 

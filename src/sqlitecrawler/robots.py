@@ -75,8 +75,71 @@ class RobotsCache:
             del self._cache[domain]
 
 
-# Global robots cache
-robots_cache = RobotsCache()
+class SitemapCache:
+    """Cache for sitemap content with TTL support to avoid repeated requests."""
+    
+    def __init__(self, default_ttl: int = 3600):  # 1 hour default TTL for sitemaps
+        self._cache: Dict[str, Tuple[BeautifulSoup, float]] = {}
+        self._failed_sitemaps: Set[str] = set()
+        self._default_ttl = default_ttl
+    
+    def get_sitemap(self, sitemap_url: str) -> Optional[BeautifulSoup]:
+        """Get cached sitemap content if not expired."""
+        if sitemap_url not in self._cache:
+            return None
+        
+        sitemap_soup, cached_time = self._cache[sitemap_url]
+        current_time = time.time()
+        
+        # Check if cache entry has expired
+        if current_time - cached_time > self._default_ttl:
+            del self._cache[sitemap_url]
+            return None
+        
+        return sitemap_soup
+    
+    def set_sitemap(self, sitemap_url: str, sitemap_soup: BeautifulSoup):
+        """Cache sitemap content with TTL."""
+        current_time = time.time()
+        self._cache[sitemap_url] = (sitemap_soup, current_time)
+    
+    def mark_failed(self, sitemap_url: str):
+        """Mark sitemap as failed to fetch."""
+        self._failed_sitemaps.add(sitemap_url)
+    
+    def is_failed(self, sitemap_url: str) -> bool:
+        """Check if sitemap failed to fetch."""
+        return sitemap_url in self._failed_sitemaps
+    
+    def clear_expired(self):
+        """Clear expired cache entries."""
+        current_time = time.time()
+        expired_sitemaps = []
+        
+        for sitemap_url, (sitemap_soup, cached_time) in self._cache.items():
+            if current_time - cached_time > self._default_ttl:
+                expired_sitemaps.append(sitemap_url)
+        
+        for sitemap_url in expired_sitemaps:
+            del self._cache[sitemap_url]
+
+# Global caches (will be initialized with config values)
+robots_cache = None
+sitemap_cache = None
+
+def init_caches(http_config=None):
+    """Initialize global caches with config values."""
+    global robots_cache, sitemap_cache
+    
+    if http_config:
+        robots_ttl = getattr(http_config, 'robots_ttl', 86400)
+        sitemap_ttl = getattr(http_config, 'sitemap_ttl', 3600)
+    else:
+        robots_ttl = 86400  # 24 hours default
+        sitemap_ttl = 3600  # 1 hour default
+    
+    robots_cache = RobotsCache(robots_ttl)
+    sitemap_cache = SitemapCache(sitemap_ttl)
 
 
 async def fetch_robots_txt(domain: str, user_agent: str = "SQLiteCrawler/0.2", http_config=None) -> Optional[str]:
@@ -109,6 +172,10 @@ async def fetch_robots_txt(domain: str, user_agent: str = "SQLiteCrawler/0.2", h
 
 async def parse_robots_txt(domain: str, user_agent: str = "SQLiteCrawler/0.2", http_config=None) -> Optional[urllib.robotparser.RobotFileParser]:
     """Parse robots.txt and return RobotFileParser object."""
+    
+    # Initialize caches if not already done
+    if robots_cache is None:
+        init_caches(http_config)
     
     # Check cache first
     if robots_cache.is_failed(domain):
@@ -201,6 +268,8 @@ async def get_sitemaps_from_robots(domain: str, user_agent: str = "SQLiteCrawler
 
 def get_crawl_delay(domain: str, user_agent: str = "SQLiteCrawler/0.2") -> Optional[float]:
     """Get crawl delay for domain and user agent from robots.txt."""
+    if robots_cache is None:
+        return None
     return robots_cache.get_crawl_delay(domain, user_agent)
 
 def is_url_crawlable(url: str, user_agent: str = "SQLiteCrawler/0.2") -> bool:
@@ -260,7 +329,24 @@ def is_url_crawlable(url: str, user_agent: str = "SQLiteCrawler/0.2") -> bool:
 
 
 async def fetch_sitemap(url: str, user_agent: str = "SQLiteCrawler/0.2", verbose: bool = False, http_config=None) -> Optional[BeautifulSoup]:
-    """Fetch and parse a sitemap XML."""
+    """Fetch and parse a sitemap XML with caching support."""
+    
+    # Initialize caches if not already done
+    if sitemap_cache is None:
+        init_caches(http_config)
+    
+    # Check cache first
+    if sitemap_cache.is_failed(url):
+        if verbose:
+            print(f"[sitemap] Skipping failed sitemap: {url}")
+        return None
+    
+    cached_sitemap = sitemap_cache.get_sitemap(url)
+    if cached_sitemap:
+        if verbose:
+            print(f"[sitemap] Using cached sitemap: {url}")
+        return cached_sitemap
+    
     if verbose:
         print(f"[sitemap] Fetching: {url}")
     
@@ -282,12 +368,18 @@ async def fetch_sitemap(url: str, user_agent: str = "SQLiteCrawler/0.2", verbose
                     content = await response.text()
                     if verbose:
                         print(f"[sitemap] Content length: {len(content)} bytes")
-                    return BeautifulSoup(content, 'xml')
+                    sitemap_soup = BeautifulSoup(content, 'xml')
+                    
+                    # Cache the successful result
+                    sitemap_cache.set_sitemap(url, sitemap_soup)
+                    return sitemap_soup
                 else:
                     print(f"[sitemap] HTTP {response.status} for {url}")
+                    sitemap_cache.mark_failed(url)
                     return None
     except Exception as e:
         print(f"[sitemap] Error fetching {url}: {e}")
+        sitemap_cache.mark_failed(url)
         return None
 
 

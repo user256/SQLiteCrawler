@@ -249,6 +249,10 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
     # Initialize delay tracker for adaptive politeness
     delay_tracker = HostDelayTracker(cfg)
     
+    # Initialize caches with config values
+    from .robots import init_caches
+    init_caches(cfg)
+    
     # Extract base domain for URL classification
     from urllib.parse import urlparse
     base_domain = urlparse(start).netloc.lower()
@@ -429,15 +433,16 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
             except Exception as e:
                 print(f"Error updating priority scores: {e}")
         
-        # Clear expired robots.txt cache entries periodically (every 100 processed pages)
+        # Clear expired cache entries periodically (every 100 processed pages)
         if processed > 0 and processed % 100 == 0:
             try:
-                from .robots import robots_cache
+                from .robots import robots_cache, sitemap_cache
                 robots_cache.clear_expired()
+                sitemap_cache.clear_expired()
                 if verbose:
-                    print(f"Cleared expired robots.txt cache entries after processing {processed} pages")
+                    print(f"Cleared expired cache entries after processing {processed} pages")
             except Exception as e:
-                print(f"Error clearing expired robots.txt cache: {e}")
+                print(f"Error clearing expired cache entries: {e}")
             
         # Determine batch size based on whether there's a limit
         if limits.max_pages > 0:
@@ -604,15 +609,15 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
                     
                     # Only follow internal links if not in CSV restricted mode
                     if depth < limits.max_depth and (not csv_urls or csv_seed_mode):
-                        for child in links:
-                            child_norm = normalize_url_for_storage(child)
-                            
-                            # Check if URL should be crawled based on classification
+                    for child in links:
+                        child_norm = normalize_url_for_storage(child)
+                        
+                        # Check if URL should be crawled based on classification
                             if should_crawl_url(child_norm, base_domain, allow_external, is_from_sitemap=False, user_agent=http_config.user_agent, csv_urls=csv_urls, csv_seed_mode=csv_seed_mode):
-                                children_to_enqueue.append((child_norm, depth + 1, original_norm, base_domain))
-                                print(f"  -> Enqueued: {child_norm}")
-                            else:
-                                # Record but don't crawl
+                            children_to_enqueue.append((child_norm, depth + 1, original_norm, base_domain))
+                            print(f"  -> Enqueued: {child_norm}")
+                        else:
+                            # Record but don't crawl
                                 urls_to_upsert.append((child_norm, "other", base_domain, original_norm))
                                 from .db import classify_url
                                 classification = classify_url(child_norm, base_domain, is_from_sitemap=False)
@@ -665,7 +670,7 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
         
         print(f"Batch complete: processed {len(results)} URLs, enqueued {len(children_to_enqueue)} new URLs")
         if limits.max_pages > 0:
-            print(f"Total processed so far: {processed}/{limits.max_pages}")
+        print(f"Total processed so far: {processed}/{limits.max_pages}")
         else:
             print(f"Total processed so far: {processed} (no limit)")
         print()
