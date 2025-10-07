@@ -9,9 +9,57 @@ This module handles extraction of structured data from HTML pages including:
 
 import json
 import re
+import hashlib
 from typing import List, Dict, Any, Optional, Tuple
 from bs4 import BeautifulSoup, Tag
 from urllib.parse import urljoin
+
+
+def create_schema_content_hash(schema_data: Dict[str, Any]) -> str:
+    """Create a SHA256 hash of normalized schema content for deduplication."""
+    # Normalize the data by removing variable fields that don't affect uniqueness
+    normalized = normalize_for_hashing(schema_data)
+    
+    # Convert to JSON with sorted keys for consistent hashing
+    content = json.dumps(normalized, sort_keys=True, separators=(',', ':'))
+    
+    # Create SHA256 hash
+    return hashlib.sha256(content.encode('utf-8')).hexdigest()
+
+
+def normalize_for_hashing(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize schema data for consistent hashing by removing variable fields."""
+    if not isinstance(data, dict):
+        return data
+    
+    normalized = data.copy()
+    
+    # Remove fields that vary but don't affect schema uniqueness
+    fields_to_remove = [
+        '@id',           # IDs are often auto-generated
+        'discovered_at', # Timestamps
+        'created_at',    # Timestamps
+        'updated_at',    # Timestamps
+        'position',      # Position on page
+        'url',           # URL references
+        'mainEntityOfPage',  # Page-specific references
+        'isPartOf',      # Page-specific references
+    ]
+    
+    for field in fields_to_remove:
+        normalized.pop(field, None)
+    
+    # Recursively normalize nested objects
+    for key, value in normalized.items():
+        if isinstance(value, dict):
+            normalized[key] = normalize_for_hashing(value)
+        elif isinstance(value, list):
+            normalized[key] = [
+                normalize_for_hashing(item) if isinstance(item, dict) else item
+                for item in value
+            ]
+    
+    return normalized
 
 
 def extract_schema_data(html: str, base_url: str) -> List[Dict[str, Any]]:
@@ -73,14 +121,12 @@ def extract_json_ld(soup: BeautifulSoup, base_url: str) -> List[Dict[str, Any]]:
             # Handle arrays of schema objects
             if isinstance(data, list):
                 for j, item in enumerate(data):
-                    schema_item = process_json_ld_item(item, json_content, i * 100 + j, base_url)
-                    if schema_item:
-                        schema_data.append(schema_item)
+                    schema_items = process_json_ld_item(item, json_content, i * 100 + j, base_url)
+                    schema_data.extend(schema_items)
             else:
                 # Single schema object
-                schema_item = process_json_ld_item(data, json_content, i, base_url)
-                if schema_item:
-                    schema_data.append(schema_item)
+                schema_items = process_json_ld_item(data, json_content, i, base_url)
+                schema_data.extend(schema_items)
                     
         except Exception as e:
             schema_data.append({
@@ -96,8 +142,32 @@ def extract_json_ld(soup: BeautifulSoup, base_url: str) -> List[Dict[str, Any]]:
     return schema_data
 
 
-def process_json_ld_item(data: Dict[str, Any], raw_json: str, position: int, base_url: str) -> Optional[Dict[str, Any]]:
-    """Process a single JSON-LD item and extract schema type."""
+def process_json_ld_item(data: Dict[str, Any], raw_json: str, position: int, base_url: str) -> List[Dict[str, Any]]:
+    """Process a single JSON-LD item and extract schema types. Returns a list of schema items."""
+    if not isinstance(data, dict):
+        return []
+    
+    schema_items = []
+    
+    # Handle @graph structure (array of schema objects)
+    if '@graph' in data and isinstance(data['@graph'], list):
+        for i, graph_item in enumerate(data['@graph']):
+            if isinstance(graph_item, dict):
+                item_result = process_single_schema_item(graph_item, raw_json, f"{position}-{i}", base_url)
+                if item_result:
+                    schema_items.append(item_result)
+        return schema_items
+    
+    # Handle single schema object
+    item_result = process_single_schema_item(data, raw_json, position, base_url)
+    if item_result:
+        schema_items.append(item_result)
+    
+    return schema_items
+
+
+def process_single_schema_item(data: Dict[str, Any], raw_json: str, position: str, base_url: str) -> Optional[Dict[str, Any]]:
+    """Process a single schema item and extract schema type."""
     if not isinstance(data, dict):
         return None
     
@@ -113,7 +183,10 @@ def process_json_ld_item(data: Dict[str, Any], raw_json: str, position: int, bas
     
     # Normalize and validate the data
     normalized_data = normalize_schema_data(data, base_url)
-    validation_errors = validate_schema_data(normalized_data, schema_type)
+    validation_errors, severity = validate_schema_data(normalized_data, schema_type)
+    
+    # Create content hash for deduplication
+    content_hash = create_schema_content_hash(normalized_data) if normalized_data else ""
     
     return {
         'format': 'json-ld',
@@ -122,7 +195,9 @@ def process_json_ld_item(data: Dict[str, Any], raw_json: str, position: int, bas
         'parsed_data': json.dumps(normalized_data) if normalized_data else None,
         'position': position,
         'is_valid': len(validation_errors) == 0,
-        'validation_errors': validation_errors
+        'validation_errors': validation_errors,
+        'severity': severity,
+        'content_hash': content_hash
     }
 
 
@@ -346,42 +421,139 @@ def normalize_schema_data(data: Dict[str, Any], base_url: str) -> Dict[str, Any]
     return normalized
 
 
-def validate_schema_data(data: Dict[str, Any], schema_type: str) -> List[str]:
-    """Validate schema data and return list of validation errors."""
+def validate_schema_data(data: Dict[str, Any], schema_type: str) -> Tuple[List[str], str]:
+    """Validate schema data and return (validation_errors, severity_level)."""
     errors = []
+    severity = 'info'  # Default severity
     
     if not isinstance(data, dict):
         errors.append("Schema data must be an object")
-        return errors
+        return errors, 'error'
     
     # Basic validation for common schema types
     if schema_type.lower() == 'article':
         if not data.get('headline'):
             errors.append("Article missing required 'headline' property")
+            severity = 'error'
         if not data.get('author'):
             errors.append("Article missing required 'author' property")
+            severity = 'error'
     
     elif schema_type.lower() == 'product':
         if not data.get('name'):
             errors.append("Product missing required 'name' property")
+            severity = 'error'
         if not data.get('offers'):
             errors.append("Product missing required 'offers' property")
+            severity = 'error'
     
     elif schema_type.lower() == 'organization':
         if not data.get('name'):
             errors.append("Organization missing required 'name' property")
+            severity = 'error'
     
     elif schema_type.lower() == 'breadcrumblist':
         if not data.get('itemListElement'):
             errors.append("BreadcrumbList missing required 'itemListElement' property")
+            severity = 'error'
+    
+    elif schema_type.lower() == 'videoobject':
+        # VideoObject validation for rich results
+        if not data.get('name'):
+            errors.append("VideoObject missing required 'name' property")
+            severity = 'error'
+        if not data.get('description'):
+            errors.append("VideoObject missing required 'description' property")
+            severity = 'error'
+        
+        # Check for common VideoObject issues that cause rich results failures
+        if 'embedUrl' in data:
+            embed_url = data['embedUrl']
+            if '&#038;' in embed_url or '&amp;' in embed_url:
+                errors.append("VideoObject embedUrl contains HTML entities that should be decoded")
+                severity = 'warning'
+            if not embed_url.startswith(('http://', 'https://')):
+                errors.append("VideoObject embedUrl should be a valid HTTP/HTTPS URL")
+                severity = 'error'
+        
+        if 'uploadDate' in data:
+            upload_date = data['uploadDate']
+            if not isinstance(upload_date, str) or len(upload_date) < 10:
+                errors.append("VideoObject uploadDate should be a valid ISO 8601 date string")
+                severity = 'warning'
+        
+        # Check for missing critical fields for rich results (these cause rich results to fail)
+        if 'thumbnailUrl' not in data and 'image' not in data:
+            errors.append("VideoObject missing 'thumbnailUrl' - CRITICAL for rich results eligibility")
+            severity = 'critical'  # This prevents rich results
+        
+        # Check for recommended fields (these improve rich results but don't cause failure)
+        if 'duration' not in data:
+            errors.append("VideoObject missing 'duration' property (recommended for rich results)")
+            if severity == 'info':
+                severity = 'warning'
     
     # Validate URLs
     for key, value in data.items():
         if 'url' in key.lower() and isinstance(value, str):
             if not value.startswith(('http://', 'https://', '/')):
                 errors.append(f"Invalid URL format for {key}: {value}")
+                if severity == 'info':
+                    severity = 'warning'
     
-    return errors
+    return errors, severity
+
+
+def identify_main_entity(schema_items: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Identify the main entity from a list of schema items."""
+    # Priority order for main entities
+    main_entity_priority = [
+        'WebPage', 'Article', 'Product', 'Event', 'Recipe', 'Review',
+        'LocalBusiness', 'Organization', 'Person', 'WebSite'
+    ]
+    
+    for priority_type in main_entity_priority:
+        for item in schema_items:
+            if item.get('type', '').lower() == priority_type.lower():
+                return item
+    
+    # If no priority entity found, return the first item
+    return schema_items[0] if schema_items else None
+
+
+def identify_schema_relationships(schema_items: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Identify relationships between schema items (main entity and properties)."""
+    if not schema_items:
+        return {'main_entity': None, 'properties': [], 'related_entities': []}
+    
+    main_entity = identify_main_entity(schema_items)
+    if not main_entity:
+        return {'main_entity': None, 'properties': [], 'related_entities': schema_items}
+    
+    # Common property types that are typically nested
+    property_types = [
+        'ImageObject', 'VideoObject', 'BreadcrumbList', 'Offer', 'AggregateRating',
+        'Review', 'Author', 'Publisher', 'Organization'
+    ]
+    
+    properties = []
+    related_entities = []
+    
+    for item in schema_items:
+        if item == main_entity:
+            continue
+            
+        item_type = item.get('type', '').lower()
+        if any(prop_type.lower() == item_type for prop_type in property_types):
+            properties.append(item)
+        else:
+            related_entities.append(item)
+    
+    return {
+        'main_entity': main_entity,
+        'properties': properties,
+        'related_entities': related_entities
+    }
 
 
 def get_schema_statistics(schema_data: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -534,7 +706,7 @@ def detect_broken_schema(soup: BeautifulSoup, base_url: str) -> List[Dict[str, A
         if ('@context' in content or '@type' in content) and 'application/ld+json' not in script.get('type', ''):
             # Found JSON-LD-like content in non-JSON-LD script
             broken_schema.append({
-                'format': 'script',
+                'format': 'json-ld',  # Use valid format for database constraint
                 'type': 'BrokenScriptSchema',
                 'raw_data': content[:500],  # Limit size
                 'parsed_data': None,

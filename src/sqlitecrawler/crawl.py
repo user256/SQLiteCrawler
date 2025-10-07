@@ -23,7 +23,7 @@ from .db import (
     batch_write_content,
     batch_write_content_with_url_resolution,
     batch_write_hreflang_sitemap_data,
-    batch_write_sitemaps_listed,
+    batch_write_sitemaps_and_urls,
     batch_write_redirects,
     batch_write_internal_links,
     extract_content_from_html,
@@ -61,7 +61,7 @@ def normalize_headers(headers: dict) -> dict:
             normalized[key_lower] = str(value).strip()
     return normalized
 
-def should_crawl_url(url: str, base_domain: str, allow_external: bool, is_from_sitemap: bool = False, user_agent: str = "SQLiteCrawler/0.2", csv_urls: list = None, csv_seed_mode: bool = False) -> bool:
+def should_crawl_url(url: str, base_domain: str, allow_external: bool, is_from_sitemap: bool = False, is_from_hreflang: bool = False, user_agent: str = "SQLiteCrawler/0.2", csv_urls: list = None, csv_seed_mode: bool = False) -> bool:
     """Determine if a URL should be crawled based on classification and settings."""
     from .db import classify_url
     from .robots import is_url_crawlable
@@ -70,13 +70,13 @@ def should_crawl_url(url: str, base_domain: str, allow_external: bool, is_from_s
     if csv_urls and not csv_seed_mode:
         return url in csv_urls
     
-    classification = classify_url(url, base_domain, is_from_sitemap)
+    classification = classify_url(url, base_domain, is_from_sitemap, is_from_hreflang)
     
     # Always crawl internal URLs (but check robots.txt)
     if classification == 'internal':
         return is_url_crawlable(url, user_agent)
     
-    # Always crawl network URLs (from sitemaps, but check robots.txt)
+    # Always crawl network URLs (from hreflang, but check robots.txt)
     if classification == 'network':
         return is_url_crawlable(url, user_agent)
     
@@ -347,26 +347,28 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
         
         # First, add all sitemap URLs to the urls table so we can reference them for hreflang data
         sitemap_urls_to_upsert = []
-        sitemap_tracking_data = []
-        position = 0
         
         for url in sitemap_urls_dict.keys():
             url_norm = normalize_url_for_storage(url)
             # These are HTML pages discovered from sitemaps, not sitemap files themselves
             sitemap_urls_to_upsert.append((url_norm, "html", base_domain, None, True))  # is_from_sitemap=True
-            # Track which sitemap this URL came from with position
-            source_sitemap_url = url_to_sitemap_mapping.get(url, "unknown")
-            sitemap_tracking_data.append((url_norm, source_sitemap_url, position))
-            position += 1
         
         if sitemap_urls_to_upsert:
             print(f"Adding {len(sitemap_urls_to_upsert)} sitemap URLs to database...")
             await batch_upsert_urls(sitemap_urls_to_upsert, crawl_db_path)
             
-            # Add sitemap tracking records
-            if sitemap_tracking_data:
-                print(f"Adding {len(sitemap_tracking_data)} sitemap tracking records...")
-                await batch_write_sitemaps_listed(sitemap_tracking_data, crawl_db_path)
+            # Group URLs by sitemap and prepare data for new schema
+            sitemap_data = {}
+            for url, url_data in sitemap_urls_dict.items():
+                source_sitemap_url = url_to_sitemap_mapping.get(url, "unknown")
+                if source_sitemap_url not in sitemap_data:
+                    sitemap_data[source_sitemap_url] = []
+                sitemap_data[source_sitemap_url].append((normalize_url_for_storage(url), len(sitemap_data[source_sitemap_url])))
+            
+            # Add sitemap records and URL-sitemap relationships
+            if sitemap_data:
+                print(f"Adding {len(sitemap_data)} sitemap records and URL relationships...")
+                await batch_write_sitemaps_and_urls(list(sitemap_data.items()), crawl_db_path)
         
         # Process hreflang data from sitemaps
         hreflang_data_to_write = []
@@ -380,7 +382,7 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
         
         if hreflang_data_to_write:
             print(f"Writing {len(hreflang_data_to_write)} hreflang entries to database...")
-            await batch_write_hreflang_sitemap_data(hreflang_data_to_write, crawl_db_path)
+            await batch_write_hreflang_sitemap_data(hreflang_data_to_write, crawl_db_path, base_domain)
         
         # Add sitemap URLs to frontier - AFTER start URL
         sitemap_urls_list = list(sitemap_urls_dict.keys())
@@ -590,7 +592,7 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
             elif k == "html":
                 urls_to_upsert.append((original_norm, "html", base_domain, parent_norm or normalize_url_for_storage(start)))
                 if text:
-                    pages_to_write.append((original_norm, final_norm, status, headers_norm, text, base_domain))
+                    pages_to_write.append((original_norm, final_norm, status, headers_norm, text, base_domain, redirect_chain_json))
                     
                     # Extract content from HTML
                     content_data = extract_content_from_html(text, headers, original_norm)
@@ -603,21 +605,30 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
                     links, detailed_links = extract_links_with_metadata(text, final_norm)
                     print(f"  -> Found {len(links)} links in HTML")
                     
+                    # Count links with image alt text for verbose logging
+                    if verbose:
+                        img_alt_count = sum(1 for link in detailed_links if link['anchor_text'].startswith('[IMG:'))
+                        title_count = sum(1 for link in detailed_links if link['anchor_text'].startswith('[TITLE:'))
+                        if img_alt_count > 0:
+                            print(f"  -> Found {img_alt_count} links using image alt text as anchor")
+                        if title_count > 0:
+                            print(f"  -> Found {title_count} links using title attribute as anchor")
+                    
                     # Store detailed links data for internal links table
                     if detailed_links:
                         links_to_write.append((original_norm, detailed_links, base_domain))
                     
                     # Only follow internal links if not in CSV restricted mode
                     if depth < limits.max_depth and (not csv_urls or csv_seed_mode):
-                    for child in links:
-                        child_norm = normalize_url_for_storage(child)
-                        
-                        # Check if URL should be crawled based on classification
+                        for child in links:
+                            child_norm = normalize_url_for_storage(child)
+                            
+                            # Check if URL should be crawled based on classification
                             if should_crawl_url(child_norm, base_domain, allow_external, is_from_sitemap=False, user_agent=http_config.user_agent, csv_urls=csv_urls, csv_seed_mode=csv_seed_mode):
-                            children_to_enqueue.append((child_norm, depth + 1, original_norm, base_domain))
-                            print(f"  -> Enqueued: {child_norm}")
-                        else:
-                            # Record but don't crawl
+                                children_to_enqueue.append((child_norm, depth + 1, original_norm, base_domain))
+                                print(f"  -> Enqueued: {child_norm}")
+                            else:
+                                # Record but don't crawl
                                 urls_to_upsert.append((child_norm, "other", base_domain, original_norm))
                                 from .db import classify_url
                                 classification = classify_url(child_norm, base_domain, is_from_sitemap=False)
@@ -655,6 +666,10 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
         if content_to_write:
             print(f"  -> Writing {len(content_to_write)} content extractions to database...")
             await batch_write_content_with_url_resolution(content_to_write, crawl_db_path)
+            
+            # Add hreflang URLs to frontier after content processing
+            from .db import add_hreflang_urls_to_frontier
+            await add_hreflang_urls_to_frontier(crawl_db_path, base_domain)
         
         # Batch write internal links data (after URLs are upserted so we can get URL IDs)
         if links_to_write:
@@ -670,7 +685,7 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
         
         print(f"Batch complete: processed {len(results)} URLs, enqueued {len(children_to_enqueue)} new URLs")
         if limits.max_pages > 0:
-        print(f"Total processed so far: {processed}/{limits.max_pages}")
+            print(f"Total processed so far: {processed}/{limits.max_pages}")
         else:
             print(f"Total processed so far: {processed} (no limit)")
         print()

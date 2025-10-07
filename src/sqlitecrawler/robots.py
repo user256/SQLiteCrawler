@@ -322,7 +322,7 @@ def extract_sitemaps_from_robots(robots_content: str) -> List[str]:
 
 async def get_sitemaps_from_robots(domain: str, user_agent: str = "SQLiteCrawler/0.2", http_config=None) -> List[str]:
     """Get sitemap URLs from robots.txt for a domain."""
-    robots_content = await fetch_robots_txt(domain, user_agent, http_config)
+    robots_content, headers = await fetch_robots_txt(domain, user_agent, http_config)
     if robots_content:
         return extract_sitemaps_from_robots(robots_content)
     return []

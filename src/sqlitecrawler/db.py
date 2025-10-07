@@ -582,18 +582,79 @@ CREATE INDEX IF NOT EXISTS idx_schema_data_valid ON schema_data(is_valid);
 CREATE VIEW IF NOT EXISTS view_crawl_overview AS
 SELECT 
     u.url,
-    f.status as frontier_status,
-    pm.initial_status_code,
-    pm.final_status_code,
-    pm.redirect_destination_url_id,
-    redirect_dest.url as redirect_destination_url,
-    i.overall_indexable,
-    u.kind,
+    COALESCE(f.status, 'unknown') as crawl_status,
+    pm.initial_status_code as status_code,
+    i.overall_indexable as indexable,
+    -- Add indexability reason when not indexable
+    CASE 
+        WHEN i.overall_indexable = 0 THEN
+            CASE 
+                WHEN i.robots_txt_allows = 0 THEN 'blocked by robots.txt'
+                WHEN i.html_meta_allows = 0 THEN 'blocked by meta robots'
+                WHEN i.http_header_allows = 0 THEN 'blocked by HTTP headers'
+                WHEN pm.initial_status_code != 200 THEN 'not 200 status'
+                WHEN canonical_urls_table.url IS NOT NULL AND canonical_urls_table.url != u.url THEN 'not self canonical'
+                ELSE 'unknown reason'
+            END
+        ELSE NULL
+    END as indexability_reason,
+    u.kind as type,
     u.classification,
     c.title,
     md.description as meta_description,
-    c.h1_tags,
-    c.h2_tags,
+    -- Split h1_tags into h1-1 and h1-2, drop others, add count
+    (SELECT h1_text FROM (
+        SELECT h1_text, ROW_NUMBER() OVER (ORDER BY h1_text) as rn
+        FROM (
+            SELECT TRIM(value) as h1_text 
+            FROM json_each(CASE 
+                WHEN c.h1_tags IS NULL OR c.h1_tags = '' THEN '[]'
+                WHEN c.h1_tags LIKE '[%' THEN c.h1_tags
+                ELSE '["' || REPLACE(REPLACE(c.h1_tags, '"', '\"'), ',', '","') || '"]'
+            END)
+            WHERE TRIM(value) != ''
+        )
+    ) WHERE rn = 1) as h1_1,
+    (SELECT h1_text FROM (
+        SELECT h1_text, ROW_NUMBER() OVER (ORDER BY h1_text) as rn
+        FROM (
+            SELECT TRIM(value) as h1_text 
+            FROM json_each(CASE 
+                WHEN c.h1_tags IS NULL OR c.h1_tags = '' THEN '[]'
+                WHEN c.h1_tags LIKE '[%' THEN c.h1_tags
+                ELSE '["' || REPLACE(REPLACE(c.h1_tags, '"', '\"'), ',', '","') || '"]'
+            END)
+            WHERE TRIM(value) != ''
+        )
+    ) WHERE rn = 2) as h1_2,
+    (SELECT COUNT(*) FROM (
+        SELECT TRIM(value) as h1_text 
+        FROM json_each(CASE 
+            WHEN c.h1_tags IS NULL OR c.h1_tags = '' THEN '[]'
+            WHEN c.h1_tags LIKE '[%' THEN c.h1_tags
+            ELSE '["' || REPLACE(REPLACE(c.h1_tags, '"', '\"'), ',', '","') || '"]'
+        END)
+        WHERE TRIM(value) != ''
+    )) as h1_count,
+    -- Convert h2_tags to CSV string and add count
+    (SELECT GROUP_CONCAT(TRIM(value), ', ') FROM (
+        SELECT TRIM(value) as value
+        FROM json_each(CASE 
+            WHEN c.h2_tags IS NULL OR c.h2_tags = '' THEN '[]'
+            WHEN c.h2_tags LIKE '[%' THEN c.h2_tags
+            ELSE '["' || REPLACE(REPLACE(c.h2_tags, '"', '\"'), ',', '","') || '"]'
+        END)
+        WHERE TRIM(value) != ''
+    )) as h2_tags,
+    (SELECT COUNT(*) FROM (
+        SELECT TRIM(value) as h2_text 
+        FROM json_each(CASE 
+            WHEN c.h2_tags IS NULL OR c.h2_tags = '' THEN '[]'
+            WHEN c.h2_tags LIKE '[%' THEN c.h2_tags
+            ELSE '["' || REPLACE(REPLACE(c.h2_tags, '"', '\"'), ',', '","') || '"]'
+        END)
+        WHERE TRIM(value) != ''
+    )) as h2_count,
     c.word_count,
     hl.language_code as html_lang,
     c.internal_links_count,
@@ -606,11 +667,12 @@ SELECT
     i.robots_txt_allows,
     i.html_meta_allows,
     i.http_header_allows,
-    i.robots_txt_directives,
-    i.html_meta_directives,
-    i.http_header_directives,
+    COALESCE(i.robots_txt_directives, '') as robots_txt_directives,
+    COALESCE(i.html_meta_directives, '') as html_meta_directives,
+    COALESCE(i.http_header_directives, '') as http_header_directives,
     GROUP_CONCAT(DISTINCT canonical_urls_table.url) as canonical_urls,
     GROUP_CONCAT(DISTINCT cu.source) as canonical_sources,
+    redirect_dest.url as redirect_destination_url,
     -- Find the hreflang language that points to this page itself (excluding x-default)
     (SELECT hl_self.language_code 
      FROM hreflang_sitemap hs_self 
@@ -633,12 +695,15 @@ LEFT JOIN urls canonical_urls_table ON cu.canonical_url_id = canonical_urls_tabl
 WHERE u.classification IN ('internal', 'network')  -- Only show internal and network URLs
 GROUP BY u.id;
 
--- View for internal links with normalized data
-CREATE VIEW IF NOT EXISTS view_internal_links_analysis AS
+-- View for all links from internal pages (internal, network, and external targets)
+-- Only shows links from URLs that were actually crawled (have frontier status)
+CREATE VIEW IF NOT EXISTS view_internal_links AS
 SELECT 
     u1.url as source_url,
     u2.url as target_url,
+    u2.classification as target_classification,
     at.text as anchor_text,
+    CASE WHEN at.text LIKE '[IMG:%' THEN 1 ELSE 0 END as is_image,
     x.xpath,
     href_urls.url as href,
     href_urls.classification as href_classification,
@@ -647,10 +712,59 @@ SELECT
     il.discovered_at
 FROM internal_links il
 JOIN urls u1 ON il.source_url_id = u1.id
+JOIN frontier f1 ON u1.id = f1.url_id  -- Only show links from URLs that were actually crawled
 LEFT JOIN urls u2 ON il.target_url_id = u2.id
 LEFT JOIN anchor_texts at ON il.anchor_text_id = at.id
 LEFT JOIN xpaths x ON il.xpath_id = x.id
 LEFT JOIN urls href_urls ON il.href_url_id = href_urls.id;
+
+-- View for internal-to-network links only
+-- Only shows links from URLs that were actually crawled (have frontier status)
+CREATE VIEW IF NOT EXISTS view_network_links AS
+SELECT 
+    u1.url as source_url,
+    u2.url as target_url,
+    u2.classification as target_classification,
+    at.text as anchor_text,
+    CASE WHEN at.text LIKE '[IMG:%' THEN 1 ELSE 0 END as is_image,
+    x.xpath,
+    href_urls.url as href,
+    href_urls.classification as href_classification,
+    il.url_fragment,
+    il.url_parameters,
+    il.discovered_at
+FROM internal_links il
+JOIN urls u1 ON il.source_url_id = u1.id
+JOIN frontier f1 ON u1.id = f1.url_id  -- Only show links from URLs that were actually crawled
+LEFT JOIN urls u2 ON il.target_url_id = u2.id
+LEFT JOIN anchor_texts at ON il.anchor_text_id = at.id
+LEFT JOIN xpaths x ON il.xpath_id = x.id
+LEFT JOIN urls href_urls ON il.href_url_id = href_urls.id
+WHERE u2.classification = 'network';  -- Only internal-to-network links
+
+-- View for internal-to-external links only
+-- Only shows links from URLs that were actually crawled (have frontier status)
+CREATE VIEW IF NOT EXISTS view_external_links AS
+SELECT 
+    u1.url as source_url,
+    u2.url as target_url,
+    u2.classification as target_classification,
+    at.text as anchor_text,
+    CASE WHEN at.text LIKE '[IMG:%' THEN 1 ELSE 0 END as is_image,
+    x.xpath,
+    href_urls.url as href,
+    href_urls.classification as href_classification,
+    il.url_fragment,
+    il.url_parameters,
+    il.discovered_at
+FROM internal_links il
+JOIN urls u1 ON il.source_url_id = u1.id
+JOIN frontier f1 ON u1.id = f1.url_id  -- Only show links from URLs that were actually crawled
+LEFT JOIN urls u2 ON il.target_url_id = u2.id
+LEFT JOIN anchor_texts at ON il.anchor_text_id = at.id
+LEFT JOIN xpaths x ON il.xpath_id = x.id
+LEFT JOIN urls href_urls ON il.href_url_id = href_urls.id
+WHERE u2.classification = 'external';  -- Only internal-to-external links
 
 -- View for sitemap statistics
 CREATE VIEW IF NOT EXISTS view_sitemap_statistics AS
@@ -855,6 +969,72 @@ GROUP BY
     cans.has_canonical, cans.no_canonical,
     ins.indexable, ins.non_indexable,
     sc.internal_urls_not_in_sitemap, so.sitemap_urls_not_crawled;
+
+--- Enhanced views for comprehensive link analysis with both original and normalized URLs
+
+-- Enhanced view showing original link data with normalized targets
+CREATE VIEW IF NOT EXISTS view_internal_links_enhanced AS
+SELECT 
+    u1.url as source_url,
+    u2.url as target_url_normalized,        -- Normalized URL (for crawling)
+    href_urls.url as target_url_original,   -- Original URL (for analysis)
+    u2.classification as target_classification,
+    at.text as anchor_text,
+    CASE WHEN at.text LIKE '[IMG:%' THEN 1 ELSE 0 END as is_image,
+    x.xpath,
+    il.url_fragment,                        -- Original fragment
+    il.url_parameters,                      -- Original parameters
+    il.discovered_at,
+    -- Additional analysis fields
+    CASE 
+        WHEN il.url_fragment IS NOT NULL AND il.url_fragment != '' THEN 1 
+        ELSE 0 
+    END as has_fragment,
+    CASE 
+        WHEN il.url_parameters IS NOT NULL AND il.url_parameters != '' THEN 1 
+        ELSE 0 
+    END as has_parameters,
+    CASE 
+        WHEN href_urls.url != u2.url THEN 1 
+        ELSE 0 
+    END as url_was_normalized
+FROM internal_links il
+JOIN urls u1 ON il.source_url_id = u1.id
+JOIN frontier f1 ON u1.id = f1.url_id  -- Only show links from URLs that were actually crawled
+LEFT JOIN urls u2 ON il.target_url_id = u2.id           -- Normalized target
+LEFT JOIN urls href_urls ON il.href_url_id = href_urls.id  -- Original href
+LEFT JOIN anchor_texts at ON il.anchor_text_id = at.id
+LEFT JOIN xpaths x ON il.xpath_id = x.id;
+
+-- View for UTM parameter analysis
+CREATE VIEW IF NOT EXISTS view_utm_links AS
+SELECT 
+    u1.url as source_url,
+    href_urls.url as target_url_original,
+    at.text as anchor_text,
+    il.url_parameters,
+    il.discovered_at
+FROM internal_links il
+JOIN urls u1 ON il.source_url_id = u1.id
+JOIN frontier f1 ON u1.id = f1.url_id
+LEFT JOIN urls href_urls ON il.href_url_id = href_urls.id
+LEFT JOIN anchor_texts at ON il.anchor_text_id = at.id
+WHERE il.url_parameters LIKE '%utm_%';
+
+-- View for fragment/anchor link analysis
+CREATE VIEW IF NOT EXISTS view_anchor_links AS
+SELECT 
+    u1.url as source_url,
+    href_urls.url as target_url_original,
+    at.text as anchor_text,
+    il.url_fragment,
+    il.discovered_at
+FROM internal_links il
+JOIN urls u1 ON il.source_url_id = u1.id
+JOIN frontier f1 ON u1.id = f1.url_id
+LEFT JOIN urls href_urls ON il.href_url_id = href_urls.id
+LEFT JOIN anchor_texts at ON il.anchor_text_id = at.id
+WHERE il.url_fragment IS NOT NULL AND il.url_fragment != '';
 """
 
 async def init_pages_db(db_path: str = PAGES_DB_PATH):
@@ -867,9 +1047,16 @@ async def init_pages_db(db_path: str = PAGES_DB_PATH):
 
 async def init_crawl_db(db_path: str = CRAWL_DB_PATH):
     async with aiosqlite.connect(db_path) as db:
-        # run both URL index + frontier schemas
-        for stmt in CRAWL_SCHEMA.split(";\n"):
-            if stmt.strip():
+        # Use a more robust approach to split SQL statements
+        import re
+        
+        # Remove comments and split by semicolon
+        schema_clean = re.sub(r'--.*$', '', CRAWL_SCHEMA, flags=re.MULTILINE)
+        statements = [stmt.strip() for stmt in schema_clean.split(';') if stmt.strip()]
+        
+        # Execute each statement
+        for stmt in statements:
+            if stmt:
                 await db.execute(stmt)
         await db.commit()
 
@@ -1503,7 +1690,7 @@ async def batch_write_content_with_url_resolution(content_data: List[Tuple[str, 
                     # Process schema data if present - use new normalized structure
                     if content_info.get('schema_data'):
                         # Use the new normalized schema storage with existing connection
-                        await create_page_schema_references_with_conn(url_id, content_info['schema_data'], conn)
+                        await create_page_schema_references_with_conn(url_id, content_info['schema_data'], conn, crawl_db_path)
                 
                 await conn.commit()
                 break  # Success, exit retry loop
@@ -1541,55 +1728,62 @@ async def batch_write_internal_links(links_data: List[Tuple[str, list, str]], cr
                     external_unique = set()
                     
                     for link_info in detailed_links:
-                        target_url = link_info['url']
-                        href_original = link_info['href']
+                        # Get both normalized and original URLs
+                        target_url = link_info['url']  # Normalized URL for crawling
+                        original_href = link_info.get('original_href', link_info['href'])  # Original href for analysis
+                        href_original = link_info['href']  # Original relative href
                         
-                        # Parse URL components
+                        # Parse URL components from original href
                         url_components = parse_url_components(href_original, source_url)
                         
                         # Get or create normalized IDs
                         anchor_text_id = await get_or_create_anchor_text_id(link_info['anchor_text'], conn)
                         xpath_id = await get_or_create_xpath_id(link_info['xpath'], conn)
-                        href_url_id = await get_or_create_href_url_id(url_components['href'], base_domain, conn)
                         
-                        # Try to get target URL ID (may not exist yet)
+                        # Store ORIGINAL href URL (for link analysis)
+                        href_url_id = await get_or_create_href_url_id(original_href, base_domain, conn)
+                        
+                        # Try to get NORMALIZED target URL ID (for crawling)
                         target_url_id = None
-                        if url_components['href']:
-                            cursor = await conn.execute("SELECT id FROM urls WHERE url = ?", (url_components['href'],))
+                        if target_url:
+                            cursor = await conn.execute("SELECT id FROM urls WHERE url = ?", (target_url,))
                             row = await cursor.fetchone()
                             if row:
                                 target_url_id = row[0]
                         
-                        # Classify the link
+                        # Classify the link using normalized URL
                         classification = classify_url(target_url, base_domain)
                         
+                        # Store ALL links from internal pages in internal_links table
+                        # This allows us to see all links from internal pages, including those with image alt text
+                        # that point to external URLs
+                        await conn.execute(
+                            """
+                            INSERT OR IGNORE INTO internal_links(
+                                source_url_id, target_url_id, anchor_text_id, xpath_id, href_url_id,
+                                url_fragment, url_parameters, discovered_at
+                            )
+                            VALUES (?,?,?,?,?,?,?,?)
+                            """,
+                            (
+                                source_url_id,
+                                target_url_id,  # Normalized URL ID for crawling
+                                anchor_text_id,
+                                xpath_id,
+                                href_url_id,    # Original href URL ID for analysis
+                                link_info.get('fragment', url_components['url_fragment']),  # Use new fragment if available
+                                link_info.get('parameters', url_components['url_parameters']),  # Use new parameters if available
+                                now
+                            )
+                        )
+                        
+                        # Count internal vs external for statistics (use normalized URLs)
                         if classification == 'internal':
                             internal_count += 1
-                            internal_unique.add(url_components['href'])
-                            
-                            # Insert internal link with fully normalized references
-                            await conn.execute(
-                                """
-                                INSERT OR IGNORE INTO internal_links(
-                                    source_url_id, target_url_id, anchor_text_id, xpath_id, href_url_id,
-                                    url_fragment, url_parameters, discovered_at
-                                )
-                                VALUES (?,?,?,?,?,?,?,?)
-                                """,
-                                (
-                                    source_url_id,
-                                    target_url_id,
-                                    anchor_text_id,
-                                    xpath_id,
-                                    href_url_id,
-                                    url_components['url_fragment'],
-                                    url_components['url_parameters'],
-                                    now
-                                )
-                            )
+                            internal_unique.add(target_url)
                         else:
                             external_count += 1
-                            external_unique.add(url_components['href'])
+                            external_unique.add(target_url)
                     
                     # Update content table with link counts
                     await conn.execute(
@@ -2379,7 +2573,7 @@ async def frontier_stats(db_path: str = CRAWL_DB_PATH) -> Tuple[int, int]:
 
 # ------------------ Schema.org functions ------------------
 
-async def get_or_create_schema_instance(schema_data: Dict[str, Any], db_path: str = CRAWL_DB_PATH, conn: aiosqlite.Connection = None) -> int:
+async def get_or_create_schema_instance(schema_data: Dict[str, Any], conn: aiosqlite.Connection, db_path: str = CRAWL_DB_PATH) -> int:
     """Get or create a schema instance and return its ID."""
     content_hash = schema_data.get('content_hash', '')
     if not content_hash:
@@ -2405,6 +2599,11 @@ async def get_or_create_schema_instance(schema_data: Dict[str, Any], db_path: st
         # Create new instance
         schema_type_id = await get_or_create_schema_type_id(db_path, schema_data['type'], conn)
         
+        # Default format if not specified
+        format_type = schema_data.get('format', 'json-ld')
+        if format_type not in ['json-ld', 'microdata', 'rdfa']:
+            format_type = 'json-ld'  # Default to json-ld
+        
         await conn.execute("""
             INSERT INTO schema_instances 
             (content_hash, schema_type_id, format, raw_data, parsed_data, is_valid, validation_errors, severity, created_at)
@@ -2412,8 +2611,8 @@ async def get_or_create_schema_instance(schema_data: Dict[str, Any], db_path: st
         """, (
             content_hash,
             schema_type_id,
-            schema_data['format'],
-            schema_data['raw_data'],
+            format_type,
+            schema_data.get('raw_data', ''),
             schema_data.get('parsed_data'),
             schema_data.get('is_valid', True),
             json.dumps(schema_data.get('validation_errors', [])),
@@ -2471,7 +2670,7 @@ async def get_or_create_schema_instance(schema_data: Dict[str, Any], db_path: st
             return result[0]
 
 
-async def create_page_schema_references_with_conn(url_id: int, schema_items: List[Dict[str, Any]], conn: aiosqlite.Connection) -> None:
+async def create_page_schema_references_with_conn(url_id: int, schema_items: List[Dict[str, Any]], conn: aiosqlite.Connection, crawl_db_path: str) -> None:
     """Create page schema references with hierarchical relationships using existing connection."""
     from .schema import identify_schema_relationships
     
@@ -2485,7 +2684,7 @@ async def create_page_schema_references_with_conn(url_id: int, schema_items: Lis
     
     # Create reference for main entity
     if main_entity:
-        main_instance_id = await get_or_create_schema_instance(main_entity, "", conn)
+        main_instance_id = await get_or_create_schema_instance(main_entity, conn, crawl_db_path)
         await conn.execute("""
             INSERT INTO page_schema_references 
             (url_id, schema_instance_id, position, is_main_entity, discovered_at)
@@ -2498,7 +2697,7 @@ async def create_page_schema_references_with_conn(url_id: int, schema_items: Lis
         
         # Create references for properties (linked to main entity)
         for prop in properties:
-            prop_instance_id = await get_or_create_schema_instance(prop, "", conn)
+            prop_instance_id = await get_or_create_schema_instance(prop, conn, crawl_db_path)
             await conn.execute("""
                 INSERT INTO page_schema_references 
                 (url_id, schema_instance_id, position, property_name, is_main_entity, parent_entity_id, discovered_at)
@@ -2515,7 +2714,7 @@ async def create_page_schema_references_with_conn(url_id: int, schema_items: Lis
     
     # Create references for related entities (standalone)
     for entity in related_entities:
-        entity_instance_id = await get_or_create_schema_instance(entity, "", conn)
+        entity_instance_id = await get_or_create_schema_instance(entity, conn, crawl_db_path)
         await conn.execute("""
             INSERT INTO page_schema_references 
             (url_id, schema_instance_id, position, is_main_entity, discovered_at)
