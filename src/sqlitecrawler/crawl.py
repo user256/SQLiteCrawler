@@ -644,42 +644,60 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
             else:
                 urls_to_upsert.append((original_norm, k, base_domain, parent_norm or normalize_url_for_storage(start)))
 
-        # Execute batch operations
-        await frontier_mark_done(to_mark_done, base_domain, db_path=crawl_db_path)
+        # Execute batch operations with parallelization
+        import asyncio
         
-        # Batch write pages
+        # Phase 1: Independent operations that can run in parallel
+        phase1_tasks = []
+        
+        # Mark frontier as done
+        phase1_tasks.append(frontier_mark_done(to_mark_done, base_domain, db_path=crawl_db_path))
+        
+        # Write pages (independent of other operations)
         if pages_to_write:
             print(f"  -> Writing {len(pages_to_write)} pages to database...")
-            await batch_write_pages(pages_to_write, pages_db_path, crawl_db_path)
+            phase1_tasks.append(batch_write_pages(pages_to_write, pages_db_path, crawl_db_path))
         
-        # Batch upsert URLs
+        # Enqueue children (independent of other operations)
+        if children_to_enqueue:
+            print(f"  -> Enqueuing {len(children_to_enqueue)} children to frontier...")
+            phase1_tasks.append(batch_enqueue_frontier(children_to_enqueue, crawl_db_path))
+        
+        # Run Phase 1 operations in parallel
+        if phase1_tasks:
+            await asyncio.gather(*phase1_tasks)
+        
+        # Phase 2: URL operations (must complete before content/links/redirects)
         if urls_to_upsert:
             print(f"  -> Upserting {len(urls_to_upsert)} URLs to database...")
             await batch_upsert_urls(urls_to_upsert, crawl_db_path)
         
-        # Batch enqueue children
-        if children_to_enqueue:
-            print(f"  -> Enqueuing {len(children_to_enqueue)} children to frontier...")
-            await batch_enqueue_frontier(children_to_enqueue, crawl_db_path)
+        # Phase 3: Content-dependent operations that can run in parallel
+        phase3_tasks = []
         
-        # Batch write content (after URLs are upserted so we can get URL IDs)
+        # Write content (depends on URLs being upserted)
         if content_to_write:
             print(f"  -> Writing {len(content_to_write)} content extractions to database...")
-            await batch_write_content_with_url_resolution(content_to_write, crawl_db_path)
-            
-            # Add hreflang URLs to frontier after content processing
-            from .db import add_hreflang_urls_to_frontier
-            await add_hreflang_urls_to_frontier(crawl_db_path, base_domain)
+            phase3_tasks.append(batch_write_content_with_url_resolution(content_to_write, crawl_db_path))
         
-        # Batch write internal links data (after URLs are upserted so we can get URL IDs)
+        # Write internal links (depends on URLs being upserted)
         if links_to_write:
             print(f"  -> Writing {len(links_to_write)} internal links to database...")
-            await batch_write_internal_links(links_to_write, crawl_db_path)
+            phase3_tasks.append(batch_write_internal_links(links_to_write, crawl_db_path))
         
-        # Batch write redirect data (after URLs are upserted so we can get URL IDs)
+        # Write redirect data (depends on URLs being upserted)
         if redirect_data_to_write:
             print(f"  -> Writing {len(redirect_data_to_write)} redirect chains to database...")
-            await batch_write_redirects(redirect_data_to_write, crawl_db_path)
+            phase3_tasks.append(batch_write_redirects(redirect_data_to_write, crawl_db_path))
+        
+        # Run Phase 3 operations in parallel
+        if phase3_tasks:
+            await asyncio.gather(*phase3_tasks)
+        
+        # Phase 4: Hreflang processing (depends on content being written)
+        if content_to_write:
+            from .db import add_hreflang_urls_to_frontier
+            await add_hreflang_urls_to_frontier(crawl_db_path, base_domain)
         
         processed += len(results)
         

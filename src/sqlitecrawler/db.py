@@ -1264,7 +1264,7 @@ async def upsert_url(url: str, kind: str, base_domain: str, discovered_from: Opt
 
 # ------------------ batch writers ------------------
 
-async def batch_write_pages(pages_data: List[Tuple[str, str, int, dict, str, str, str]], pages_db_path: str = PAGES_DB_PATH, crawl_db_path: str = CRAWL_DB_PATH, batch_size: int = 50):
+async def batch_write_pages(pages_data: List[Tuple[str, str, int, dict, str, str, str]], pages_db_path: str = PAGES_DB_PATH, crawl_db_path: str = CRAWL_DB_PATH, batch_size: int = 100):
     """Batch write multiple pages for better performance."""
     if not pages_data:
         return
@@ -1357,7 +1357,7 @@ async def _batch_write_pages_chunk(pages_data: List[Tuple[str, str, int, dict, s
         )
         await crawl_conn.commit()
 
-async def batch_upsert_urls(urls_data: List[Tuple], db_path: str = CRAWL_DB_PATH, batch_size: int = 100):
+async def batch_upsert_urls(urls_data: List[Tuple], db_path: str = CRAWL_DB_PATH, batch_size: int = 500):
     """Batch upsert multiple URLs for better performance."""
     if not urls_data:
         return
@@ -1407,7 +1407,7 @@ async def _batch_upsert_urls_chunk(urls_data: List[Tuple], db_path: str):
         )
         await conn.commit()
 
-async def batch_enqueue_frontier(children_data: List[Tuple[str, int, Optional[str], str]], db_path: str = CRAWL_DB_PATH, batch_size: int = 200):
+async def batch_enqueue_frontier(children_data: List[Tuple[str, int, Optional[str], str]], db_path: str = CRAWL_DB_PATH, batch_size: int = 1000):
     """Batch enqueue multiple frontier items for better performance."""
     if not children_data:
         return
@@ -1441,7 +1441,7 @@ async def _batch_enqueue_frontier_chunk(children_data: List[Tuple[str, int, Opti
         )
         await conn.commit()
 
-async def batch_write_content(content_data: List[Tuple[int, str, str, str, str, str, str, int, bool]], db_path: str = CRAWL_DB_PATH, batch_size: int = 50):
+async def batch_write_content(content_data: List[Tuple[int, str, str, str, str, str, str, int, bool]], db_path: str = CRAWL_DB_PATH, batch_size: int = 100):
     """Batch write content extraction data for better performance."""
     if not content_data:
         return

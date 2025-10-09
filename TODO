@@ -2,6 +2,15 @@
 
 ## 🚀 HIGH PRIORITY - Core Features
 
+### 🏃‍♂️ PERFORMANCE OPTIMIZATION (URGENT)
+* **Parallelize database write operations** - run pages, URLs, content, and links writes concurrently instead of sequentially
+* **Increase default batch sizes** for better throughput (pages: 100, URLs: 500, frontier: 1000)
+* **Add URL normalization caching** to avoid repeated punycode/parameter processing
+* **Make HTML parsing async** to avoid blocking the event loop during content extraction
+* **Implement database connection pooling** to reduce connection overhead
+* **Prefetch next batch of URLs** while processing current batch to reduce idle time
+* **Optimize HTML compression** (currently using gzip) - consider zstd or lz4 for faster compression
+* **Add database indexes** on frequently queried columns (urls.url, frontier.url_id, etc.)
 
 ### Crawl Quality & Politeness
 * ✅ **Adaptive politeness per host**: dynamic rate limiting based on latency and 429/503s  
