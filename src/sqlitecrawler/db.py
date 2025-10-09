@@ -5,10 +5,21 @@ from .config import PAGES_DB_PATH, CRAWL_DB_PATH
 
 # ------------------ compression helpers ------------------
 
+async def optimize_connection(conn):
+    """Apply performance optimizations to a database connection."""
+    await conn.execute("PRAGMA journal_mode=WAL")
+    await conn.execute("PRAGMA synchronous=NORMAL")
+    await conn.execute("PRAGMA cache_size=50000")
+    await conn.execute("PRAGMA temp_store=MEMORY")
+    await conn.execute("PRAGMA mmap_size=268435456")  # 256MB memory mapping
+    await conn.execute("PRAGMA page_size=4096")  # Larger page size for better performance
+
 def compress_html(html: str) -> bytes:
-    return base64.b64encode(zlib.compress(html.encode("utf-8")))
+    """Compress HTML using zlib with maximum compression level for smaller file sizes."""
+    return base64.b64encode(zlib.compress(html.encode("utf-8"), level=9))
 
 def decompress_html(encoded: bytes) -> str:
+    """Decompress HTML from bytes to string."""
     try:
         return zlib.decompress(base64.b64decode(encoded)).decode("utf-8")
     except Exception:
@@ -18,8 +29,8 @@ def decompress_html(encoded: bytes) -> str:
             return ""
 
 def compress_headers(headers: dict) -> bytes:
-    """Compress headers dictionary to bytes."""
-    return base64.b64encode(zlib.compress(json.dumps(headers, ensure_ascii=False).encode("utf-8")))
+    """Compress headers dictionary to bytes with maximum compression for smaller file sizes."""
+    return base64.b64encode(zlib.compress(json.dumps(headers, ensure_ascii=False).encode("utf-8"), level=9))
 
 def decompress_headers(encoded: bytes) -> dict:
     """Decompress headers from bytes to dictionary."""
@@ -28,119 +39,130 @@ def decompress_headers(encoded: bytes) -> dict:
     except Exception:
         return {}
 
-def extract_content_from_html(html: str, headers: dict = None, base_url: str = None) -> dict:
+async def extract_content_from_html(html: str, headers: dict = None, base_url: str = None) -> dict:
     """Extract title, meta description, robots, canonical, h1, h2 tags, word count, and schema data from HTML."""
-    try:
-        from bs4 import BeautifulSoup
-        soup = BeautifulSoup(html, 'html.parser')
-        
-        # Extract title
-        title_tag = soup.find('title')
-        title = title_tag.get_text().strip() if title_tag else None
-        
-        # Extract meta description
-        meta_desc_tag = soup.find('meta', attrs={'name': 'description'})
-        meta_description = meta_desc_tag.get('content', '').strip() if meta_desc_tag else None
-        
-        # Extract meta robots
-        meta_robots_tag = soup.find('meta', attrs={'name': 'robots'})
-        meta_robots = meta_robots_tag.get('content', '').strip() if meta_robots_tag else None
-        
-        # Extract canonical URL from HTML head
-        canonical_tag = soup.find('link', attrs={'rel': 'canonical'})
-        canonical_url = canonical_tag.get('href', '').strip() if canonical_tag else None
-        
-        # Extract hreflang URLs from HTML head
-        hreflang_urls = []
-        hreflang_links = soup.find_all('link', attrs={'rel': 'alternate', 'hreflang': True})
-        for link in hreflang_links:
-            href = link.get('href', '').strip()
-            hreflang = link.get('hreflang', '').strip()
-            if href and hreflang:
-                hreflang_urls.append({'url': href, 'hreflang': hreflang})
-        
-        # Extract HTML lang declaration (check both html and head tags)
-        html_tag = soup.find('html')
-        html_lang = None
-        
-        if html_tag:
-            html_lang = html_tag.get('lang', '').strip()
-        
-        # If no lang on html tag, check head tag
-        if not html_lang:
-            head_tag = soup.find('head')
-            if head_tag:
-                html_lang = head_tag.get('lang', '').strip()
-        
-        # If still no lang, check for xml:lang attribute
-        if not html_lang and html_tag:
-            html_lang = html_tag.get('xml:lang', '').strip()
-        
-        # Extract h1 tags
-        h1_tags = [h1.get_text().strip() for h1 in soup.find_all('h1') if h1.get_text().strip()]
-        
-        # Extract h2 tags
-        h2_tags = [h2.get_text().strip() for h2 in soup.find_all('h2') if h2.get_text().strip()]
-        
-        # Count words in visible text
-        for script in soup(["script", "style"]):
-            script.decompose()
-        text = soup.get_text()
-        words = text.split()
-        word_count = len(words)
-        
-        # Parse robots directives from HTML meta
-        html_meta_directives = []
-        if meta_robots:
-            directives = [d.strip().lower() for d in meta_robots.split(',')]
-            html_meta_directives = directives
-        
-        # Parse robots directives from HTTP headers
-        http_header_directives = []
-        if headers:
-            robots_header = headers.get('x-robots-tag', '')
-            if robots_header:
-                directives = [d.strip().lower() for d in robots_header.split(',')]
-                http_header_directives = directives
-        
-        # Extract schema data if base_url is provided
-        schema_data = []
-        if base_url:
-            try:
-                from .schema import extract_schema_data
-                schema_data = extract_schema_data(html, base_url)
-            except Exception as e:
-                print(f"Error extracting schema data: {e}")
-                schema_data = []
-        
-        return {
-            'title': title,
-            'meta_description': meta_description,
-            'h1_tags': h1_tags,
-            'h2_tags': h2_tags,
-            'word_count': word_count,
-            'html_meta_directives': html_meta_directives,
-            'http_header_directives': http_header_directives,
-            'canonical_url': canonical_url,
-            'html_lang': html_lang,
-            'hreflang_urls': hreflang_urls,
-            'schema_data': schema_data
-        }
-    except Exception as e:
-        print(f"Error extracting content from HTML: {e}")
-        return {
-            'title': None,
-            'meta_description': None,
-            'h1_tags': [],
-            'h2_tags': [],
-            'word_count': 0,
-            'html_meta_directives': [],
-            'http_header_directives': [],
-            'canonical_url': None,
-            'html_lang': None,
-            'hreflang_urls': [],
-            'schema_data': []
-        }
+    import asyncio
+    import concurrent.futures
+    
+    def _parse_html_sync(html_content: str, headers_dict: dict = None, base_url_str: str = None) -> dict:
+        """Synchronous HTML parsing function to run in thread pool."""
+        try:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # Extract title
+            title_tag = soup.find('title')
+            title = title_tag.get_text().strip() if title_tag else None
+            
+            # Extract meta description
+            meta_desc_tag = soup.find('meta', attrs={'name': 'description'})
+            meta_description = meta_desc_tag.get('content', '').strip() if meta_desc_tag else None
+            
+            # Extract meta robots
+            meta_robots_tag = soup.find('meta', attrs={'name': 'robots'})
+            meta_robots = meta_robots_tag.get('content', '').strip() if meta_robots_tag else None
+            
+            # Extract canonical URL from HTML head
+            canonical_tag = soup.find('link', attrs={'rel': 'canonical'})
+            canonical_url = canonical_tag.get('href', '').strip() if canonical_tag else None
+            
+            # Extract hreflang URLs from HTML head
+            hreflang_urls = []
+            hreflang_links = soup.find_all('link', attrs={'rel': 'alternate', 'hreflang': True})
+            for link in hreflang_links:
+                href = link.get('href', '').strip()
+                hreflang = link.get('hreflang', '').strip()
+                if href and hreflang:
+                    hreflang_urls.append({'url': href, 'hreflang': hreflang})
+            
+            # Extract HTML lang declaration (check both html and head tags)
+            html_tag = soup.find('html')
+            html_lang = None
+            
+            if html_tag:
+                html_lang = html_tag.get('lang', '').strip()
+            
+            # If no lang on html tag, check head tag
+            if not html_lang:
+                head_tag = soup.find('head')
+                if head_tag:
+                    html_lang = head_tag.get('lang', '').strip()
+            
+            # If still no lang, check for xml:lang attribute
+            if not html_lang and html_tag:
+                html_lang = html_tag.get('xml:lang', '').strip()
+            
+            # Extract h1 tags
+            h1_tags = [h1.get_text().strip() for h1 in soup.find_all('h1') if h1.get_text().strip()]
+            
+            # Extract h2 tags
+            h2_tags = [h2.get_text().strip() for h2 in soup.find_all('h2') if h2.get_text().strip()]
+            
+            # Count words in visible text
+            for script in soup(["script", "style"]):
+                script.decompose()
+            text = soup.get_text()
+            words = text.split()
+            word_count = len(words)
+            
+            # Parse robots directives from HTML meta
+            html_meta_directives = []
+            if meta_robots:
+                directives = [d.strip().lower() for d in meta_robots.split(',')]
+                html_meta_directives = directives
+            
+            # Parse robots directives from HTTP headers
+            http_header_directives = []
+            if headers_dict:
+                robots_header = headers_dict.get('x-robots-tag', '')
+                if robots_header:
+                    directives = [d.strip().lower() for d in robots_header.split(',')]
+                    http_header_directives = directives
+            
+            # Extract schema data if base_url is provided
+            schema_data = []
+            if base_url_str:
+                try:
+                    from .schema import extract_schema_data
+                    schema_data = extract_schema_data(html_content, base_url_str)
+                except Exception as e:
+                    print(f"Error extracting schema data: {e}")
+                    schema_data = []
+            
+            return {
+                'title': title,
+                'meta_description': meta_description,
+                'h1_tags': h1_tags,
+                'h2_tags': h2_tags,
+                'word_count': word_count,
+                'html_meta_directives': html_meta_directives,
+                'http_header_directives': http_header_directives,
+                'canonical_url': canonical_url,
+                'html_lang': html_lang,
+                'hreflang_urls': hreflang_urls,
+                'schema_data': schema_data
+            }
+        except Exception as e:
+            print(f"Error extracting content from HTML: {e}")
+            return {
+                'title': None,
+                'meta_description': None,
+                'h1_tags': [],
+                'h2_tags': [],
+                'word_count': 0,
+                'html_meta_directives': [],
+                'http_header_directives': [],
+                'canonical_url': None,
+                'html_lang': None,
+                'hreflang_urls': [],
+                'schema_data': []
+            }
+    
+    # Run the synchronous parsing in a thread pool to avoid blocking the event loop
+    loop = asyncio.get_event_loop()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        result = await loop.run_in_executor(executor, _parse_html_sync, html, headers, base_url)
+    return result
 
 # ------------------ database connection pool ------------------
 
@@ -163,8 +185,10 @@ class DatabasePool:
         conn = await aiosqlite.connect(self.db_path)
         await conn.execute("PRAGMA journal_mode=WAL")
         await conn.execute("PRAGMA synchronous=NORMAL")
-        await conn.execute("PRAGMA cache_size=10000")
+        await conn.execute("PRAGMA cache_size=50000")  # Increased from 10000
         await conn.execute("PRAGMA temp_store=MEMORY")
+        await conn.execute("PRAGMA mmap_size=268435456")  # 256MB memory mapping
+        await conn.execute("PRAGMA page_size=4096")  # Larger page size for better performance
         self._pool.append(conn)
         await self._available.put(conn)
         
@@ -1039,6 +1063,7 @@ WHERE il.url_fragment IS NOT NULL AND il.url_fragment != '';
 
 async def init_pages_db(db_path: str = PAGES_DB_PATH):
     async with aiosqlite.connect(db_path) as db:
+        await optimize_connection(db)
         # Execute each statement separately
         for stmt in PAGES_SCHEMA.split(";\n"):
             if stmt.strip():
@@ -1047,6 +1072,7 @@ async def init_pages_db(db_path: str = PAGES_DB_PATH):
 
 async def init_crawl_db(db_path: str = CRAWL_DB_PATH):
     async with aiosqlite.connect(db_path) as db:
+        await optimize_connection(db)
         # Use a more robust approach to split SQL statements
         import re
         
@@ -1203,7 +1229,7 @@ async def write_page(url: str, final_url: str, status: int, headers: dict, html:
     etag = headers.get('etag', '').strip('"') if headers.get('etag') else None
     last_modified = headers.get('last-modified', '').strip() if headers.get('last-modified') else None
     
-    # Store HTML and headers in pages database
+    # Store HTML and headers in pages database with maximum compression for smaller file sizes
     async with aiosqlite.connect(pages_db_path) as db:
         await db.execute(
             """
@@ -1278,6 +1304,8 @@ async def _batch_write_pages_chunk(pages_data: List[Tuple[str, str, int, dict, s
     """Write a chunk of pages."""
     
     async with aiosqlite.connect(pages_db_path) as pages_conn, aiosqlite.connect(crawl_db_path) as crawl_conn:
+        await optimize_connection(pages_conn)
+        await optimize_connection(crawl_conn)
         # Prepare batch data for pages (HTML and headers only)
         pages_batch_data = []
         metadata_batch_data = []
@@ -1326,7 +1354,7 @@ async def _batch_write_pages_chunk(pages_data: List[Tuple[str, str, int, dict, s
                 url_id, initial_status_code, status, final_url_id, redirect_destination_url_id, int(time.time()), etag, last_modified
             ))
         
-        # Batch insert pages (HTML and headers)
+        # Batch insert pages (HTML and headers) with maximum compression for smaller file sizes
         await pages_conn.executemany(
             """
             INSERT INTO pages(url_id, headers_json, html_compressed)
@@ -1698,7 +1726,7 @@ async def batch_write_content_with_url_resolution(content_data: List[Tuple[str, 
         except aiosqlite.OperationalError as e:
             if "database is locked" in str(e) and attempt < 2:
                 import asyncio
-                await asyncio.sleep(0.1 * (attempt + 1))  # Exponential backoff
+                await asyncio.sleep(0.01 * (attempt + 1))  # Faster retry with exponential backoff
                 continue
             raise
 
@@ -1810,7 +1838,7 @@ async def batch_write_internal_links(links_data: List[Tuple[str, list, str]], cr
         except aiosqlite.OperationalError as e:
             if "database is locked" in str(e) and attempt < 2:
                 import asyncio
-                await asyncio.sleep(0.1 * (attempt + 1))  # Exponential backoff
+                await asyncio.sleep(0.01 * (attempt + 1))  # Faster retry with exponential backoff
                 continue
             raise
 
@@ -2338,10 +2366,21 @@ async def get_or_create_url_id_with_conn(url: str, base_domain: str, db_path: st
     
     # Create new URL record
     cursor = await conn.execute(
-        "INSERT INTO urls (url, classification, discovered_from_id, first_seen, last_seen) VALUES (?, ?, ?, ?, ?)",
+        """
+        INSERT INTO urls (url, classification, discovered_from_id, first_seen, last_seen) 
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(url) DO UPDATE SET
+          classification=excluded.classification,
+          discovered_from_id=COALESCE(urls.discovered_from_id, excluded.discovered_from_id),
+          last_seen=excluded.last_seen
+        """,
         (url, classification, discovered_from_id, int(time.time()), int(time.time()))
     )
-    return cursor.lastrowid
+    
+    # Get the URL ID (either newly created or existing)
+    cursor = await conn.execute("SELECT id FROM urls WHERE url = ?", (url,))
+    row = await cursor.fetchone()
+    return row[0]
 
 # ------------------ frontier scoring ------------------
 
@@ -2453,6 +2492,7 @@ async def frontier_seed(start: str, base_domain: str, reset: bool = False, db_pa
 
 async def frontier_next_batch(limit: int, db_path: str = CRAWL_DB_PATH) -> List[Tuple[str, int, Optional[str]]]:
     async with aiosqlite.connect(db_path) as db:
+        await optimize_connection(db)
         cur = await db.execute(
             """
             SELECT f.url_id, f.depth, f.parent_id, u.url, p.url as parent_url, f.priority_score
@@ -2807,7 +2847,7 @@ async def get_or_create_schema_type_id(crawl_db_path: str, type_name: str, conn:
             except aiosqlite.OperationalError as e:
                 if "database is locked" in str(e) and attempt < 2:
                     import asyncio
-                    await asyncio.sleep(0.1 * (attempt + 1))  # Exponential backoff
+                    await asyncio.sleep(0.01 * (attempt + 1))  # Faster retry with exponential backoff
                     continue
                 raise
 

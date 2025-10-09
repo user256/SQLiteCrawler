@@ -406,6 +406,7 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
             print(f"Added {len(sitemap_urls_list)} URLs from sitemaps to frontier")
 
     processed = 0
+    next_batch_cache = None  # Initialize prefetched batch storage
     while True:
         # Check for shutdown request
         if shutdown_requested:
@@ -455,10 +456,24 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
         else:
             batch_size = cfg.max_concurrency
             
-        batch = await frontier_next_batch(batch_size, db_path=crawl_db_path)
-        if not batch:
-            print("No more URLs in frontier - crawl complete!")
-            break
+        # Prefetch next batch while processing current batch (if we have one)
+        next_batch_task = None
+        if next_batch_cache:
+            # We already have a prefetched batch, use it
+            batch = next_batch_cache
+            next_batch_cache = None
+        else:
+            # Fetch the first batch
+            batch = await frontier_next_batch(batch_size, db_path=crawl_db_path)
+            if not batch:
+                print("No more URLs in frontier - crawl complete!")
+                break
+        
+        # Start prefetching the next batch while we process the current one
+        if limits.max_pages == 0 or processed + batch_size < limits.max_pages:
+            next_batch_task = asyncio.create_task(
+                frontier_next_batch(batch_size, db_path=crawl_db_path)
+            )
 
         urls = [u for (u, _d, _p) in batch]
         depths = {u: d for (u, d, _p) in batch}
@@ -595,14 +610,14 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
                     pages_to_write.append((original_norm, final_norm, status, headers_norm, text, base_domain, redirect_chain_json))
                     
                     # Extract content from HTML
-                    content_data = extract_content_from_html(text, headers, original_norm)
+                    content_data = await extract_content_from_html(text, headers, original_norm)
                     if content_data['title'] or content_data['meta_description'] or content_data['h1_tags'] or content_data['h2_tags']:
                         # We'll need the URL ID, so we'll add this to content_to_write with a placeholder
                         # The actual URL ID will be resolved during batch processing
                         content_to_write.append((original_norm, content_data, base_domain))
                 if text:
                     # Extract links with metadata for internal links tracking
-                    links, detailed_links = extract_links_with_metadata(text, final_norm)
+                    links, detailed_links = await extract_links_with_metadata(text, final_norm)
                     print(f"  -> Found {len(links)} links in HTML")
                     
                     # Count links with image alt text for verbose logging
@@ -645,7 +660,6 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
                 urls_to_upsert.append((original_norm, k, base_domain, parent_norm or normalize_url_for_storage(start)))
 
         # Execute batch operations with parallelization
-        import asyncio
         
         # Phase 1: Independent operations that can run in parallel
         phase1_tasks = []
@@ -698,6 +712,19 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
         if content_to_write:
             from .db import add_hreflang_urls_to_frontier
             await add_hreflang_urls_to_frontier(crawl_db_path, base_domain)
+        
+        # Store the prefetched batch for the next iteration
+        if next_batch_task:
+            try:
+                next_batch = await next_batch_task
+                if next_batch:
+                    next_batch_cache = next_batch
+                else:
+                    # No more URLs available, we'll exit on next iteration
+                    next_batch_cache = None
+            except Exception as e:
+                print(f"Warning: Failed to prefetch next batch: {e}")
+                next_batch_cache = None
         
         processed += len(results)
         
