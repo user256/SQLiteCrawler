@@ -99,3 +99,6 @@ dmypy.json
 
 # Cursor IDE
 .cursorrules
+
+# Private files
+Private.md
