@@ -3,7 +3,6 @@
 ## 🚀 CURRENT PRIORITIES
 
 ### **Core Crawler Improvements**
-- **Content hashing** - SHA256 + SimHash/MinHash for near-duplicate detection and crawl comparison
 - **Incremental crawl diffs** - Detect changes per URL using content hashes
 
 **Note:** Async HTML parsing, ThreadPoolExecutor optimizations, and database connection pooling were tested but found to be slower than the current "First Optimization" approach. Direct aiosqlite.connect() calls are more reliable and performant than connection pooling for SQLite.
@@ -43,6 +42,7 @@
 - ✅ HTML compression optimization (zlib level=9 with base64 encoding)
 - ✅ Comprehensive database indexing (62 indexes covering all query patterns)
 - ✅ URL normalization caching (LRU cache with 10,000 entries)
+- ✅ Content hashing (SHA256 + SimHash for duplicate detection and crawl comparison)
 
 ### **Core Features** ✅
 - ✅ HTTP/2 & Brotli support
