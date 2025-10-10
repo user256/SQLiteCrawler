@@ -109,6 +109,14 @@ Examples:
     p.add_argument("--csv-column", type=str, default="url",
                    help="Column name containing URLs in CSV file (default: 'url')")
     
+    # Crawl comparison support
+    p.add_argument("--compare-domain", type=str, default="",
+                   help="Domain to compare against (e.g., https://staging.example.com)")
+    p.add_argument("--commercial-csv", type=str, default="",
+                   help="CSV file containing commercial page URLs for comparison analysis")
+    p.add_argument("--compare-links", action="store_true",
+                   help="Enable detailed link comparison analysis (added/lost internal links)")
+    
     # Output and logging
     p.add_argument("--verbose", "-v", action="store_true", 
                    help="Enable verbose output")
@@ -275,4 +283,20 @@ Examples:
         start_url = csv_urls[0]
         print(f"Using first CSV URL as start URL: {start_url}")
     
-    asyncio.run(crawl(start_url, use_js=args.js, limits=limits, reset_frontier=args.reset_frontier, http_config=http_config, allow_external=args.allow_external, max_workers=args.max_workers, verbose=args.verbose, csv_urls=csv_urls, csv_seed_mode=args.csv_seed))
+    # Handle crawl comparison if compare-domain is specified
+    if args.compare_domain:
+        from src.sqlitecrawler.comparison import run_crawl_comparison
+        asyncio.run(run_crawl_comparison(
+            origin_url=start_url,
+            staging_url=args.compare_domain,
+            commercial_csv=args.commercial_csv,
+            compare_links=args.compare_links,
+            use_js=args.js,
+            limits=limits,
+            http_config=http_config,
+            allow_external=args.allow_external,
+            max_workers=args.max_workers,
+            verbose=args.verbose
+        ))
+    else:
+        asyncio.run(crawl(start_url, use_js=args.js, limits=limits, reset_frontier=args.reset_frontier, http_config=http_config, allow_external=args.allow_external, max_workers=args.max_workers, verbose=args.verbose, csv_urls=csv_urls, csv_seed_mode=args.csv_seed))

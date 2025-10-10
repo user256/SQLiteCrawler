@@ -15,6 +15,7 @@ See [PERFORMANCE_ANALYSIS.md](PERFORMANCE_ANALYSIS.md) for detailed benchmark re
 ## Features
 
 - **Persistent Frontier**: Resume crawls from where you left off
+- **Crawl Comparison**: Compare origin and staging domains with comprehensive analysis
 - **Redirect Tracking**: Complete redirect chain capture and storage
 - **Content Extraction**: Titles, meta descriptions, H1/H2 tags, robots directives, canonicals
 - **Sitemap Discovery**: Automatic XML sitemap parsing and URL discovery
@@ -253,6 +254,32 @@ https://example.com/
 https://example.com/about/
 https://example.com/contact/
 ```
+
+### Crawl Comparison
+
+Compare origin and staging domains with comprehensive analysis:
+
+```bash
+# Basic comparison
+python main.py https://example.com --compare-domain https://staging.example.com
+
+# With commercial pages analysis
+python main.py https://example.com --compare-domain https://staging.example.com --commercial-csv commercial.csv
+
+# With detailed link comparison
+python main.py https://example.com --compare-domain https://staging.example.com --compare-links
+```
+
+**Comparison Features:**
+- **Automatic seed list generation** from origin crawl
+- **Comprehensive analysis views** for missing/new URLs
+- **Indexability comparison** (robots.txt, meta robots, HTTP headers, canonicals)
+- **Content comparison** (titles, H1s, meta descriptions)
+- **Schema markup comparison** (JSON-LD, Microdata, RDFa)
+- **Optional commercial pages analysis** with CSV input
+- **Optional link comparison** (added/lost internal links)
+
+**Output:** Creates a comparison database with analysis views for detailed reporting.
 
 ### Single URL Crawling
 
