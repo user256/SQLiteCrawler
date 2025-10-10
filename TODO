@@ -41,7 +41,35 @@
 * **Proxy rotation** - allow rotating proxies  
 * **Header rotation** - enable rotating headers  
 * **Custom extraction** - CSS Path, XPath, regex data extraction  
-* **Crawl comparison** - enable comparison between crawls (including staging, URL remapping)  
+* **Crawl comparison** - enable comparison between crawls (including staging, URL remapping)
+  - [ ] Add `--compare-domain` CLI parameter
+  - [ ] Run standard crawl on origin domain (seedlist + sitemaps + open crawl)
+  - [ ] Run staging crawl on comparison domain (seedlist + sitemaps + open crawl)
+    - [ ] Optional `--commercial-csv` parameter for commercial pages analysis
+  - [ ] Create comparison database with both crawl results
+  - [ ] Create comparison views:
+    - [ ] `view_sitemap_changes` - URLs in origin sitemaps vs staging sitemaps
+    - [ ] `view_urls_missing` - URLs on origin not found on staging
+    - [ ] `view_urls_new` - URLs on staging not found on origin
+    - [ ] `view_indexability_comparison` - Indexability status comparison (origin vs staging)
+      - [ ] Show robots.txt directives (origin, staging, match)
+      - [ ] Show HTTP header directives (origin, staging, match)
+      - [ ] Show HTML meta directives (origin, staging, match)
+      - [ ] Show canonical URLs (head and header, origin vs staging)
+    - [ ] `view_crawl_overview_comparison` - Comprehensive comparison view
+      - [ ] All paths with exists_on_origin/staging flags
+      - [ ] Title comparison (origin vs staging)
+      - [ ] H1 comparison (origin vs staging)
+      - [ ] Indexability comparison (origin vs staging)
+      - [ ] Internal links count (origin vs staging)
+      - [ ] Status codes (origin vs staging)
+    - [ ] `view_schema_comparison` - Schema markup comparison (origin vs staging)
+    - [ ] Optional link comparison views (param controlled):
+      - [ ] `view_internal_links_added` - Internal links present in staging but not origin
+      - [ ] `view_internal_links_lost` - Internal links present in origin but not staging
+    - [ ] Optional commercial pages analysis (when --commercial-csv provided):
+      - [ ] `view_commercial_summary` - Commercial pages analysis summary
+      - [ ] `view_commercial_issues` - Commercial pages with issues or mismatches  
 
 ### Asset Crawling & Analysis
 * **Record assets** - option to record js/image/iframe/fonts and other linked assets  

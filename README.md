@@ -1,6 +1,16 @@
 # SQLiteCrawler
 
-A high-performance, persistent web crawler built with Python and SQLite. Features intelligent URL discovery, redirect tracking, content extraction, and comprehensive data storage.
+A high-performance, persistent web crawler built with Python and SQLite. Features intelligent URL discovery, redirect tracking, content extraction, and comprehensive data storage with optimized performance settings.
+
+## Performance
+
+SQLiteCrawler uses optimized settings for maximum performance:
+- **Parallel database operations** for faster I/O
+- **Optimized batch sizes** (100/500/1000/100) for better throughput
+- **Intelligent retry logic** with exponential backoff
+- **7.1% faster** than baseline configuration
+
+See [PERFORMANCE_ANALYSIS.md](PERFORMANCE_ANALYSIS.md) for detailed benchmark results.
 
 ## Features
 

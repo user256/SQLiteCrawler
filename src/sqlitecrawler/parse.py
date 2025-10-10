@@ -243,7 +243,7 @@ async def extract_links_with_metadata(html: str, base_url: str) -> tuple[list[st
     
     # Run the synchronous parsing in a thread pool to avoid blocking the event loop
     loop = asyncio.get_event_loop()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         result = await loop.run_in_executor(executor, _extract_links_sync, html, base_url)
     return result
 

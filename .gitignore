@@ -102,3 +102,7 @@ dmypy.json
 
 # Private files
 Private.md
+
+# Large data files
+CrawlCompare/*.csv
+CrawlCompare/*.sqlite

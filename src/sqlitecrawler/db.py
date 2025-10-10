@@ -9,10 +9,8 @@ async def optimize_connection(conn):
     """Apply performance optimizations to a database connection."""
     await conn.execute("PRAGMA journal_mode=WAL")
     await conn.execute("PRAGMA synchronous=NORMAL")
-    await conn.execute("PRAGMA cache_size=50000")
+    await conn.execute("PRAGMA cache_size=10000")
     await conn.execute("PRAGMA temp_store=MEMORY")
-    await conn.execute("PRAGMA mmap_size=268435456")  # 256MB memory mapping
-    await conn.execute("PRAGMA page_size=4096")  # Larger page size for better performance
 
 def compress_html(html: str) -> bytes:
     """Compress HTML using zlib with maximum compression level for smaller file sizes."""
@@ -160,7 +158,7 @@ async def extract_content_from_html(html: str, headers: dict = None, base_url: s
     
     # Run the synchronous parsing in a thread pool to avoid blocking the event loop
     loop = asyncio.get_event_loop()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         result = await loop.run_in_executor(executor, _parse_html_sync, html, headers, base_url)
     return result
 
@@ -185,10 +183,8 @@ class DatabasePool:
         conn = await aiosqlite.connect(self.db_path)
         await conn.execute("PRAGMA journal_mode=WAL")
         await conn.execute("PRAGMA synchronous=NORMAL")
-        await conn.execute("PRAGMA cache_size=50000")  # Increased from 10000
+        await conn.execute("PRAGMA cache_size=10000")
         await conn.execute("PRAGMA temp_store=MEMORY")
-        await conn.execute("PRAGMA mmap_size=268435456")  # 256MB memory mapping
-        await conn.execute("PRAGMA page_size=4096")  # Larger page size for better performance
         self._pool.append(conn)
         await self._available.put(conn)
         
@@ -1726,7 +1722,7 @@ async def batch_write_content_with_url_resolution(content_data: List[Tuple[str, 
         except aiosqlite.OperationalError as e:
             if "database is locked" in str(e) and attempt < 2:
                 import asyncio
-                await asyncio.sleep(0.01 * (attempt + 1))  # Faster retry with exponential backoff
+                await asyncio.sleep(0.1 * (attempt + 1))  # Exponential backoff
                 continue
             raise
 
@@ -1838,7 +1834,7 @@ async def batch_write_internal_links(links_data: List[Tuple[str, list, str]], cr
         except aiosqlite.OperationalError as e:
             if "database is locked" in str(e) and attempt < 2:
                 import asyncio
-                await asyncio.sleep(0.01 * (attempt + 1))  # Faster retry with exponential backoff
+                await asyncio.sleep(0.1 * (attempt + 1))  # Exponential backoff
                 continue
             raise
 
@@ -2847,7 +2843,7 @@ async def get_or_create_schema_type_id(crawl_db_path: str, type_name: str, conn:
             except aiosqlite.OperationalError as e:
                 if "database is locked" in str(e) and attempt < 2:
                     import asyncio
-                    await asyncio.sleep(0.01 * (attempt + 1))  # Faster retry with exponential backoff
+                    await asyncio.sleep(0.1 * (attempt + 1))  # Exponential backoff
                     continue
                 raise
 
