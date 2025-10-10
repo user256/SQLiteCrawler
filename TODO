@@ -3,14 +3,13 @@
 ## 🚀 CURRENT PRIORITIES
 
 ### **Core Crawler Improvements**
-- **No current improvements needed** - All major optimizations are complete
+- **Content hashing** - SHA256 + SimHash/MinHash for near-duplicate detection and crawl comparison
+- **Incremental crawl diffs** - Detect changes per URL using content hashes
 
 **Note:** Async HTML parsing, ThreadPoolExecutor optimizations, and database connection pooling were tested but found to be slower than the current "First Optimization" approach. Direct aiosqlite.connect() calls are more reliable and performant than connection pooling for SQLite.
 
 ### **Crawl Quality & Politeness**
 - **Sitemap TTL caching** - Implement sitemap freshness policy
-- **Content hashing** - SHA256 + SimHash/MinHash for near-duplicate detection
-- **Incremental crawl diffs** - Detect changes per URL
 - **Content-type sniffing** - Enhanced charset detection
 - **Meta refresh & JS redirects** - Detect client-side redirects
 - **Retry/backoff tuning** - Optimize by failure type
@@ -22,6 +21,7 @@
 - **Migration system** - Semver schema migrations
 
 ### **Comparison Features** 🆕
+- **Content hashing comparison** - SHA256/SimHash for detecting content changes and duplicates
 - **Enhanced content analysis** - Image analysis, schema markup comparison
 - **Advanced link analysis** - Link equity, broken link detection, anchor text analysis
 - **Performance metrics** - Page load times, Core Web Vitals
