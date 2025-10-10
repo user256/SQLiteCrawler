@@ -3,9 +3,9 @@
 ## 🚀 CURRENT PRIORITIES
 
 ### **Core Crawler Improvements**
-- **Database connection pooling** - Reduce connection overhead
+- **No current improvements needed** - All major optimizations are complete
 
-**Note:** Async HTML parsing and ThreadPoolExecutor optimizations were tested but found to be slower than the current "First Optimization" approach.
+**Note:** Async HTML parsing, ThreadPoolExecutor optimizations, and database connection pooling were tested but found to be slower than the current "First Optimization" approach. Direct aiosqlite.connect() calls are more reliable and performant than connection pooling for SQLite.
 
 ### **Crawl Quality & Politeness**
 - **Sitemap TTL caching** - Implement sitemap freshness policy

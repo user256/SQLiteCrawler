@@ -163,67 +163,8 @@ async def extract_content_from_html(html: str, headers: dict = None, base_url: s
     return result
 
 # ------------------ database connection pool ------------------
-
-class DatabasePool:
-    """Async database connection pool for better performance."""
-    
-    def __init__(self, db_path: str, pool_size: int = 5):
-        self.db_path = db_path
-        self.pool_size = pool_size
-        self._pool: List[aiosqlite.Connection] = []
-        self._available: asyncio.Queue = asyncio.Queue()
-        self._initialized = False
-    
-    async def initialize(self):
-        """Initialize the connection pool."""
-        if self._initialized:
-            return
-        
-        # Use a single connection for now to avoid I/O conflicts
-        conn = await aiosqlite.connect(self.db_path)
-        await conn.execute("PRAGMA journal_mode=WAL")
-        await conn.execute("PRAGMA synchronous=NORMAL")
-        await conn.execute("PRAGMA cache_size=10000")
-        await conn.execute("PRAGMA temp_store=MEMORY")
-        self._pool.append(conn)
-        await self._available.put(conn)
-        
-        self._initialized = True
-    
-    async def get_connection(self) -> aiosqlite.Connection:
-        """Get a connection from the pool."""
-        if not self._initialized:
-            await self.initialize()
-        return await self._available.get()
-    
-    async def return_connection(self, conn: aiosqlite.Connection):
-        """Return a connection to the pool."""
-        await self._available.put(conn)
-    
-    async def close(self):
-        """Close all connections in the pool."""
-        for conn in self._pool:
-            await conn.close()
-        self._pool.clear()
-        self._initialized = False
-
-# Global connection pools
-_pages_pools: Dict[str, DatabasePool] = {}
-_crawl_pools: Dict[str, DatabasePool] = {}
-
-async def get_pages_pool(db_path: str) -> DatabasePool:
-    """Get or create a pages database pool."""
-    if db_path not in _pages_pools:
-        _pages_pools[db_path] = DatabasePool(db_path)
-        await _pages_pools[db_path].initialize()
-    return _pages_pools[db_path]
-
-async def get_crawl_pool(db_path: str) -> DatabasePool:
-    """Get or create a crawl database pool."""
-    if db_path not in _crawl_pools:
-        _crawl_pools[db_path] = DatabasePool(db_path)
-        await _crawl_pools[db_path].initialize()
-    return _crawl_pools[db_path]
+# Note: Connection pooling was tested but found to cause issues with SQLite
+# Direct aiosqlite.connect() calls are more reliable and performant
 
 # ------------------ schema init ------------------
 
