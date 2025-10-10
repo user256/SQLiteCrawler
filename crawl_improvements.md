@@ -26,12 +26,13 @@ This document outlines potential enhancements to the core SQLiteCrawler function
 **Impact:** High | **Effort:** Medium
 
 - **URL normalization caching** - LRU cache for punycode/parameter processing
-- **Async HTML parsing** - Make content extraction non-blocking
 - **Database connection pooling** - Reduce connection overhead
 - **Prefetch optimization** - Fetch next batch while processing current
 - **HTML compression optimization** - Consider zstd or lz4 for faster compression
 - **Database indexing** - Add indexes on frequently queried columns
 - **Memory optimization** - Streaming large datasets, reduce memory footprint
+
+**⚠️ Performance Note:** Async HTML parsing and increased ThreadPoolExecutor workers were tested but found to be slower than the current "First Optimization" approach. The current implementation (ThreadPoolExecutor with 4 workers, cache_size=10000) represents the optimal balance.
 
 ### **2. 🔍 Content Analysis & Quality**
 **Impact:** High | **Effort:** Medium
