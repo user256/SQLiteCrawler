@@ -61,6 +61,7 @@ async def run_crawl_comparison(
     
     # Step 1: Run origin crawl
     print("🔄 Step 1: Crawling origin domain...")
+    print(f"  Settings: JS={use_js}, Concurrency={http_config.max_concurrency if http_config else 'default'}")
     origin_start_time = time.time()
     
     origin_pages_db, origin_crawl_db = get_db_paths(origin_url)
@@ -88,6 +89,8 @@ async def run_crawl_comparison(
     
     # Step 3: Run staging crawl
     print("🔄 Step 3: Crawling staging domain...")
+    print(f"  Settings: JS={use_js}, Concurrency={http_config.max_concurrency if http_config else 'default'}")
+    print(f"  Using {len(staging_seed_urls)} seed URLs from origin crawl")
     staging_start_time = time.time()
     
     staging_pages_db, staging_crawl_db = get_db_paths(staging_url)
@@ -157,7 +160,8 @@ async def init_comparison_db(db_path: str):
                 staging_url_id INTEGER,
                 exists_on_origin INTEGER DEFAULT 0,
                 exists_on_staging INTEGER DEFAULT 0,
-                FOREIGN KEY (session_id) REFERENCES comparison_sessions(id)
+                FOREIGN KEY (session_id) REFERENCES comparison_sessions(id),
+                UNIQUE(session_id, path)
             )
         ''')
         
@@ -321,7 +325,7 @@ async def create_comparison_urls_mapping(
                     break
             
             await db.execute('''
-                INSERT INTO comparison_urls 
+                INSERT OR REPLACE INTO comparison_urls 
                 (session_id, path, origin_url_id, staging_url_id, exists_on_origin, exists_on_staging)
                 VALUES (?, ?, ?, ?, ?, ?)
             ''', (session_id, path, origin_url_id, staging_url_id, exists_on_origin, exists_on_staging))
