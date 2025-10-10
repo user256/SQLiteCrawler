@@ -127,6 +127,19 @@ async def extract_content_from_html(html: str, headers: dict = None, base_url: s
                     print(f"Error extracting schema data: {e}")
                     schema_data = []
             
+            # Generate content hashes for duplicate detection
+            content_hashes = {}
+            try:
+                from .hashing import generate_content_hashes
+                content_hashes = generate_content_hashes(html_content)
+            except Exception as e:
+                print(f"Error generating content hashes: {e}")
+                content_hashes = {
+                    'content_hash_sha256': '',
+                    'content_hash_simhash': '',
+                    'content_length': 0
+                }
+            
             return {
                 'title': title,
                 'meta_description': meta_description,
@@ -138,7 +151,10 @@ async def extract_content_from_html(html: str, headers: dict = None, base_url: s
                 'canonical_url': canonical_url,
                 'html_lang': html_lang,
                 'hreflang_urls': hreflang_urls,
-                'schema_data': schema_data
+                'schema_data': schema_data,
+                'content_hash_sha256': content_hashes.get('content_hash_sha256', ''),
+                'content_hash_simhash': content_hashes.get('content_hash_simhash', ''),
+                'content_length': content_hashes.get('content_length', 0)
             }
         except Exception as e:
             print(f"Error extracting content from HTML: {e}")
@@ -153,7 +169,10 @@ async def extract_content_from_html(html: str, headers: dict = None, base_url: s
                 'canonical_url': None,
                 'html_lang': None,
                 'hreflang_urls': [],
-                'schema_data': []
+                'schema_data': [],
+                'content_hash_sha256': '',
+                'content_hash_simhash': '',
+                'content_length': 0
             }
     
     # Run the synchronous parsing in a thread pool to avoid blocking the event loop
@@ -213,11 +232,16 @@ CREATE TABLE IF NOT EXISTS content (
   crawl_depth INTEGER DEFAULT 0,
   inlinks_count INTEGER DEFAULT 0,
   inlinks_unique_count INTEGER DEFAULT 0,
+  content_hash_sha256 TEXT,  -- SHA256 hash for exact duplicate detection
+  content_hash_simhash TEXT,  -- SimHash for near-duplicate detection
+  content_length INTEGER,  -- Length of cleaned content
   FOREIGN KEY (url_id) REFERENCES urls (id),
   FOREIGN KEY (meta_description_id) REFERENCES meta_descriptions (id),
   FOREIGN KEY (html_lang_id) REFERENCES html_languages (id)
 );
 CREATE INDEX IF NOT EXISTS idx_content_url_id ON content(url_id);
+CREATE INDEX IF NOT EXISTS idx_content_hash_sha256 ON content(content_hash_sha256);
+CREATE INDEX IF NOT EXISTS idx_content_hash_simhash ON content(content_hash_simhash);
 
 -- Normalized anchor text table
 CREATE TABLE IF NOT EXISTS anchor_texts (
@@ -996,6 +1020,58 @@ JOIN frontier f1 ON u1.id = f1.url_id
 LEFT JOIN urls href_urls ON il.href_url_id = href_urls.id
 LEFT JOIN anchor_texts at ON il.anchor_text_id = at.id
 WHERE il.url_fragment IS NOT NULL AND il.url_fragment != '';
+
+--- View for exact duplicate content detection
+CREATE VIEW IF NOT EXISTS view_exact_duplicates AS
+SELECT 
+    c1.url_id as url1_id,
+    c2.url_id as url2_id,
+    u1.url as url1,
+    u2.url as url2,
+    c1.content_hash_sha256,
+    c1.content_length,
+    'Exact duplicate' as duplicate_type
+FROM content c1
+JOIN content c2 ON c1.content_hash_sha256 = c2.content_hash_sha256
+JOIN urls u1 ON c1.url_id = u1.id
+JOIN urls u2 ON c2.url_id = u2.id
+WHERE c1.url_id < c2.url_id  -- Avoid self-comparison and duplicates
+  AND c1.content_hash_sha256 IS NOT NULL 
+  AND c1.content_hash_sha256 != '';
+
+--- View for near-duplicate content detection
+CREATE VIEW IF NOT EXISTS view_near_duplicates AS
+SELECT 
+    c1.url_id as url1_id,
+    c2.url_id as url2_id,
+    u1.url as url1,
+    u2.url as url2,
+    c1.content_hash_simhash,
+    c2.content_hash_simhash,
+    c1.content_length as url1_length,
+    c2.content_length as url2_length,
+    'Near duplicate' as duplicate_type
+FROM content c1
+JOIN content c2 ON c1.content_hash_simhash = c2.content_hash_simhash
+JOIN urls u1 ON c1.url_id = u1.id
+JOIN urls u2 ON c2.url_id = u2.id
+WHERE c1.url_id < c2.url_id  -- Avoid self-comparison and duplicates
+  AND c1.content_hash_simhash IS NOT NULL 
+  AND c1.content_hash_simhash != ''
+  AND c1.content_hash_sha256 != c2.content_hash_sha256;  -- Exclude exact duplicates
+
+--- View for content hash statistics
+CREATE VIEW IF NOT EXISTS view_content_hash_stats AS
+SELECT 
+    COUNT(*) as total_pages,
+    COUNT(CASE WHEN content_hash_sha256 IS NOT NULL AND content_hash_sha256 != '' THEN 1 END) as pages_with_sha256,
+    COUNT(CASE WHEN content_hash_simhash IS NOT NULL AND content_hash_simhash != '' THEN 1 END) as pages_with_simhash,
+    COUNT(DISTINCT content_hash_sha256) as unique_sha256_hashes,
+    COUNT(DISTINCT content_hash_simhash) as unique_simhash_hashes,
+    AVG(content_length) as avg_content_length,
+    MIN(content_length) as min_content_length,
+    MAX(content_length) as max_content_length
+FROM content;
 """
 
 async def init_pages_db(db_path: str = PAGES_DB_PATH):
@@ -1485,15 +1561,18 @@ async def batch_write_content_with_url_resolution(content_data: List[Tuple[str, 
                     # Insert/update content
                     await conn.execute(
                         """
-                        INSERT INTO content(url_id, title, meta_description_id, h1_tags, h2_tags, word_count, html_lang_id)
-                        VALUES (?,?,?,?,?,?,?)
+                        INSERT INTO content(url_id, title, meta_description_id, h1_tags, h2_tags, word_count, html_lang_id, content_hash_sha256, content_hash_simhash, content_length)
+                        VALUES (?,?,?,?,?,?,?,?,?,?)
                         ON CONFLICT(url_id) DO UPDATE SET
                           title=excluded.title,
                           meta_description_id=excluded.meta_description_id,
                           h1_tags=excluded.h1_tags,
                           h2_tags=excluded.h2_tags,
                           word_count=excluded.word_count,
-                          html_lang_id=excluded.html_lang_id
+                          html_lang_id=excluded.html_lang_id,
+                          content_hash_sha256=excluded.content_hash_sha256,
+                          content_hash_simhash=excluded.content_hash_simhash,
+                          content_length=excluded.content_length
                         """,
                         (
                             url_id,
@@ -1502,7 +1581,10 @@ async def batch_write_content_with_url_resolution(content_data: List[Tuple[str, 
                             json.dumps(content_info['h1_tags'], ensure_ascii=False),
                             json.dumps(content_info['h2_tags'], ensure_ascii=False),
                             content_info['word_count'],
-                            html_lang_id
+                            html_lang_id,
+                            content_info.get('content_hash_sha256', ''),
+                            content_info.get('content_hash_simhash', ''),
+                            content_info.get('content_length', 0)
                         )
                     )
                     

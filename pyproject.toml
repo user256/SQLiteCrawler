@@ -16,6 +16,7 @@ dependencies = [
   "beautifulsoup4>=4.12",
   "lxml>=5.2",
   "defusedxml>=0.7",
+  "simhash>=2.1.2",
 ]
 
 [project.optional-dependencies]
