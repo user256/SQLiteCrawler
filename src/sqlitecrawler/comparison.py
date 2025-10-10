@@ -68,7 +68,7 @@ async def run_crawl_comparison(
     await init_crawl_db(origin_crawl_db)
     
     await crawl(
-        start_url=origin_url,
+        start=origin_url,
         use_js=use_js,
         limits=limits,
         reset_frontier=True,
@@ -95,7 +95,7 @@ async def run_crawl_comparison(
     await init_crawl_db(staging_crawl_db)
     
     await crawl(
-        start_url=staging_url,
+        start=staging_url,
         use_js=use_js,
         limits=limits,
         reset_frontier=True,
@@ -346,8 +346,7 @@ async def create_comparison_views(db_path: str, session_id: int, compare_links: 
                     ELSE 'Unknown'
                 END as change_type
             FROM comparison_urls cu
-            WHERE cu.session_id = ?
-        ''', (session_id,))
+        ''')
         
         # View: URLs missing in staging
         await db.execute('''
@@ -356,8 +355,8 @@ async def create_comparison_views(db_path: str, session_id: int, compare_links: 
                 cu.path,
                 'Missing in staging' as issue_type
             FROM comparison_urls cu
-            WHERE cu.session_id = ? AND cu.exists_on_origin = 1 AND cu.exists_on_staging = 0
-        ''', (session_id,))
+            WHERE cu.exists_on_origin = 1 AND cu.exists_on_staging = 0
+        ''')
         
         # View: URLs new in staging
         await db.execute('''
@@ -366,8 +365,8 @@ async def create_comparison_views(db_path: str, session_id: int, compare_links: 
                 cu.path,
                 'New in staging' as issue_type
             FROM comparison_urls cu
-            WHERE cu.session_id = ? AND cu.exists_on_origin = 0 AND cu.exists_on_staging = 1
-        ''', (session_id,))
+            WHERE cu.exists_on_origin = 0 AND cu.exists_on_staging = 1
+        ''')
         
         # View: Indexability comparison
         await db.execute('''
@@ -381,8 +380,7 @@ async def create_comparison_views(db_path: str, session_id: int, compare_links: 
                 'Indexable' as staging_indexability,
                 'Match' as indexability_match
             FROM comparison_urls cu
-            WHERE cu.session_id = ?
-        ''', (session_id,))
+        ''')
         
         # View: Crawl overview comparison
         await db.execute('''
@@ -400,8 +398,7 @@ async def create_comparison_views(db_path: str, session_id: int, compare_links: 
                 0 as origin_internal_links,
                 0 as staging_internal_links
             FROM comparison_urls cu
-            WHERE cu.session_id = ?
-        ''', (session_id,))
+        ''')
         
         # View: Schema comparison
         await db.execute('''
@@ -414,8 +411,7 @@ async def create_comparison_views(db_path: str, session_id: int, compare_links: 
                 'No schema' as staging_schema,
                 'Match' as schema_match
             FROM comparison_urls cu
-            WHERE cu.session_id = ?
-        ''', (session_id,))
+        ''')
         
         # Optional link comparison views
         if compare_links:
@@ -425,8 +421,8 @@ async def create_comparison_views(db_path: str, session_id: int, compare_links: 
                     cu.path,
                     'Links added in staging' as link_change_type
                 FROM comparison_urls cu
-                WHERE cu.session_id = ? AND cu.exists_on_staging = 1
-            ''', (session_id,))
+                WHERE cu.exists_on_staging = 1
+            ''')
             
             await db.execute('''
                 CREATE VIEW IF NOT EXISTS view_internal_links_lost AS
@@ -434,8 +430,8 @@ async def create_comparison_views(db_path: str, session_id: int, compare_links: 
                     cu.path,
                     'Links lost in staging' as link_change_type
                 FROM comparison_urls cu
-                WHERE cu.session_id = ? AND cu.exists_on_origin = 1
-            ''', (session_id,))
+                WHERE cu.exists_on_origin = 1
+            ''')
         
         await db.commit()
 
@@ -473,8 +469,7 @@ async def process_commercial_pages(
                 SUM(CASE WHEN cp.staging_url_id IS NOT NULL THEN 1 ELSE 0 END) as found_in_staging,
                 SUM(CASE WHEN cp.staging_url_id IS NULL THEN 1 ELSE 0 END) as missing_in_staging
             FROM commercial_pages cp
-            WHERE cp.session_id = ?
-        ''', (session_id,))
+        ''')
         
         await db.execute('''
             CREATE VIEW IF NOT EXISTS view_commercial_issues AS
@@ -486,8 +481,7 @@ async def process_commercial_pages(
                     ELSE 'No issues'
                 END as issue_type
             FROM commercial_pages cp
-            WHERE cp.session_id = ?
-        ''', (session_id,))
+        ''')
         
         await db.commit()
 
