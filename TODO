@@ -5,7 +5,6 @@
 ### **Core Crawler Improvements**
 - **URL normalization caching** - Add LRU cache for punycode/parameter processing
 - **Database connection pooling** - Reduce connection overhead
-- **Prefetch optimization** - Fetch next batch while processing current
 - **HTML compression optimization** - Consider zstd or lz4 for faster compression
 - **Database indexing** - Add indexes on frequently queried columns
 
@@ -43,6 +42,7 @@
 - ✅ Frontier scoring with priority
 - ✅ URL normalization hardening
 - ✅ Optimized ThreadPoolExecutor settings (4 workers, cache_size=10000)
+- ✅ Prefetch optimization (fetch next batch while processing current)
 
 ### **Core Features** ✅
 - ✅ HTTP/2 & Brotli support
