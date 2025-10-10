@@ -1,252 +1,101 @@
 # SQLiteCrawler TODO List
 
-## 🚀 HIGH PRIORITY - Core Features
+## 🚀 CURRENT PRIORITIES
 
-### 🏃‍♂️ PERFORMANCE OPTIMIZATION (URGENT)
-* ✅ **Parallelize database write operations** - run pages, URLs, content, and links writes concurrently instead of sequentially (3.3x faster!)
-* ✅ **Increase default batch sizes** for better throughput (pages: 100, URLs: 500, frontier: 1000) (70% faster!)
-* **Add URL normalization caching** to avoid repeated punycode/parameter processing
-* **Make HTML parsing async** to avoid blocking the event loop during content extraction
-* **Implement database connection pooling** to reduce connection overhead
-* **Prefetch next batch of URLs** while processing current batch to reduce idle time
-* **Optimize HTML compression** (currently using gzip) - consider zstd or lz4 for faster compression
-* **Add database indexes** on frequently queried columns (urls.url, frontier.url_id, etc.)
+### **Core Crawler Improvements**
+- **URL normalization caching** - Add LRU cache for punycode/parameter processing
+- **Async HTML parsing** - Make content extraction non-blocking
+- **Database connection pooling** - Reduce connection overhead
+- **Prefetch optimization** - Fetch next batch while processing current
+- **HTML compression optimization** - Consider zstd or lz4 for faster compression
+- **Database indexing** - Add indexes on frequently queried columns
 
-### Crawl Quality & Politeness
-* ✅ **Adaptive politeness per host**: dynamic rate limiting based on latency and 429/503s  
-* ✅ **Conditional requests**: ETag / If-Modified-Since handling  
-* ✅ **Respect crawl-delay and robots TTL caching**  
-* **sitemap TTL caching / sitemap freshness policy**  
-* ✅ **Frontier scoring**: prioritize by depth, sitemap priority, inlinks, etc.  
-* ✅ **URL normalization hardening**: punycode, default ports, param sorting, UTM stripping  
+### **Crawl Quality & Politeness**
+- **Sitemap TTL caching** - Implement sitemap freshness policy
+- **Content hashing** - SHA256 + SimHash/MinHash for near-duplicate detection
+- **Incremental crawl diffs** - Detect changes per URL
+- **Content-type sniffing** - Enhanced charset detection
+- **Meta refresh & JS redirects** - Detect client-side redirects
+- **Retry/backoff tuning** - Optimize by failure type
 
-### Data Model & Storage
-* **Content hashing** (SHA256) + **SimHash/MinHash** near-duplicate detection  
-* **Incremental crawl diffs** - detect changes per URL  
-* **SQLite optimization**: WAL mode, batching, indexed hot columns  
-* **Migration system** with semver schema migrations  
+### **Advanced Features**
+- **Proxy rotation** - Support rotating proxies
+- **Header rotation** - Enable rotating headers
+- **Custom extraction** - CSS Path, XPath, regex data extraction
+- **Migration system** - Semver schema migrations
 
-### Robust Fetching
-* ✅ **HTTP/2 & Brotli support**  
-* ✅ **Enhanced authentication methods**
-    - Authorization: Bearer <token> or Authorization: JWT <token>
-    - Custom headers / header inclusions
-    - API key authentication
-* **Content-type sniffing** & charset detection  
-* **Meta refresh & JS redirects detection**  
-* **Retry/backoff tuning by failure type**  
+### **Comparison Features** 🆕
+- **Enhanced content analysis** - Image analysis, schema markup comparison
+- **Advanced link analysis** - Link equity, broken link detection, anchor text analysis
+- **Performance metrics** - Page load times, Core Web Vitals
+- **SEO-specific analysis** - Technical SEO, mobile-friendliness, accessibility
+- **Export functionality** - CSV, JSON, PDF reports
+- **Web dashboard** - Visual comparison interface
 
-### Advanced Crawling Features
-* ✅ **CSV crawl support** - crawl from csv (restricted && seed)  
-* **Proxy rotation** - allow rotating proxies  
-* **Header rotation** - enable rotating headers  
-* **Custom extraction** - CSS Path, XPath, regex data extraction  
-* **Crawl comparison** - enable comparison between crawls (including staging, URL remapping)
-  - [ ] Add `--compare-domain` CLI parameter
-  - [ ] Run standard crawl on origin domain (seedlist + sitemaps + open crawl)
-  - [ ] Run staging crawl on comparison domain (seedlist + sitemaps + open crawl)
-    - [ ] Optional `--commercial-csv` parameter for commercial pages analysis
-  - [ ] Create comparison database with both crawl results
-  - [ ] Create comparison views:
-    - [ ] `view_sitemap_changes` - URLs in origin sitemaps vs staging sitemaps
-    - [ ] `view_urls_missing` - URLs on origin not found on staging
-    - [ ] `view_urls_new` - URLs on staging not found on origin
-    - [ ] `view_indexability_comparison` - Indexability status comparison (origin vs staging)
-      - [ ] Show robots.txt directives (origin, staging, match)
-      - [ ] Show HTTP header directives (origin, staging, match)
-      - [ ] Show HTML meta directives (origin, staging, match)
-      - [ ] Show canonical URLs (head and header, origin vs staging)
-    - [ ] `view_crawl_overview_comparison` - Comprehensive comparison view
-      - [ ] All paths with exists_on_origin/staging flags
-      - [ ] Title comparison (origin vs staging)
-      - [ ] H1 comparison (origin vs staging)
-      - [ ] Indexability comparison (origin vs staging)
-      - [ ] Internal links count (origin vs staging)
-      - [ ] Status codes (origin vs staging)
-    - [ ] `view_schema_comparison` - Schema markup comparison (origin vs staging)
-    - [ ] Optional link comparison views (param controlled):
-      - [ ] `view_internal_links_added` - Internal links present in staging but not origin
-      - [ ] `view_internal_links_lost` - Internal links present in origin but not staging
-    - [ ] Optional commercial pages analysis (when --commercial-csv provided):
-      - [ ] `view_commercial_summary` - Commercial pages analysis summary
-      - [ ] `view_commercial_issues` - Commercial pages with issues or mismatches  
+## 📋 COMPLETED FEATURES
 
-### Asset Crawling & Analysis
-* **Record assets** - option to record js/image/iframe/fonts and other linked assets  
-* **Fetch assets** - option to record & crawl js/image/iframe/fonts and other linked assets  
-* **Caching analysis** - report on caching / assets with no cache / cache busting  
-* **Performance hints** - evaluate preconnect/preload/prefetch for speed improvements  
+### **Performance Optimization** ✅
+- ✅ Parallel database write operations (3.3x faster)
+- ✅ Increased default batch sizes (70% faster)
+- ✅ Adaptive politeness per host
+- ✅ Conditional requests (ETag/If-Modified-Since)
+- ✅ Frontier scoring with priority
+- ✅ URL normalization hardening
 
-### Authentication & Security
-* ✅ **Authenticated crawling** - support basic/digest auth for staging sites  
-* **Security headers** - CSP, X-CTO, Referrer-Policy, X-Frame-Options  
-* **HTTPS analysis** - HTTP URLs, mixed content detection  
-* **HSTS validation** - header validation and security analysis  
+### **Core Features** ✅
+- ✅ HTTP/2 & Brotli support
+- ✅ Enhanced authentication methods
+- ✅ CSV crawl support
+- ✅ Crawl comparison functionality
+- ✅ Content analysis and URL move detection
+- ✅ Comprehensive comparison views
 
+### **Data Model** ✅
+- ✅ SQLite optimization (WAL mode, batching)
+- ✅ Database normalization
+- ✅ Redirect tracking
+- ✅ Schema.org extraction
+- ✅ Hreflang support
 
-### Extraction Accuracy
-* **Boilerplate removal & word count** for thin content checks  
-* **Language detection** for `html lang` vs detected  
-* **Canonical via HTTP Link header**  
-* **OpenGraph/Twitter Cards** extraction  
+## 🎯 NEXT RELEASE GOALS
 
-### Observability
-* **Metrics (Prometheus)** - fetch rates, errors, latency  
-* **Structured logging (JSON)** with crawl_id correlation  
-* **Progress UI/CLI** - pages/min, ETA, per-host stats  
+### **v0.4 - Performance & Quality**
+- URL normalization caching
+- Async HTML parsing
+- Database connection pooling
+- Sitemap TTL caching
+- Content hashing
 
----
+### **v0.5 - Advanced Features**
+- Proxy rotation
+- Custom extraction
+- Enhanced comparison analysis
+- Export functionality
 
-## 📊 MEDIUM PRIORITY - SEO Analysis
+### **v0.6 - User Experience**
+- Web dashboard
+- Advanced reporting
+- API endpoints
+- Team collaboration
 
-### Content Analysis
-* ✅ **Schema.org extraction** - markdown/json-ld parsing  
-* **OpenGraph analysis** - social media metadata  
-* **Pagination detection** - rel=prev/next analysis  
-* **Title tag analysis** - length, uniqueness, boilerplate detection  
-* **Meta description analysis** - length, uniqueness, duplicate detection  
-* **Header structure audit** - H1-H6 hierarchy and optimization  
-* **Content analysis** - thin content detection, word count  
-* **Language validation** - html lang vs detected language  
+## 📊 SUCCESS METRICS
 
-### Link & Navigation Analysis
-* **Anchor text quality** - generic anchors, empty anchors  
-* **Broken links detection** - 4xx/5xx internal and external links  
-* **Nofollow analysis** - page-level vs per-link nofollow  
-* **Faceted navigation** - parameter explosions, session IDs  
-* **Breadcrumb detection** - navigation analysis  
-* **Internal links graph** - crawl depth, hub pages, PageRank calculation  
-* **Graph export** - GraphML/CSV/Parquet with weights  
-* **Broken link audit** - grouped by type and source examples  
-* **Nofollow semantics** - page-level and link-level parsing  
+### **Performance**
+- Comparison completion time: <50% of current
+- Memory usage: <2GB for 10K page comparisons
+- Database query performance: <100ms for complex views
 
-### Technical SEO
-* **XML sitemap auditing** - analyze sitemap quality and issues  
-  - URLs not in sitemap  
-  - URLs in crawl but not sitemaps  
-  - Non-indexable URLs in sitemap  
-* **Canonical analysis** - links to non-canonical versions, broken/redirected canonicals  
-* **Duplicate content** - identify similar/duplicate pages  
-* **Hreflang audit** - international SEO checks  
-  - Multiple language declarations  
-  - Mismatching reciprocity  
-  - Hreflang vs html lang conflicts  
-  - Invalid language codes  
-  - Non-indexable URLs in hreflang  
-* **Redirect analysis** - track and optimize redirect chains  
-* **Hreflang reciprocity** - round-trip validation  
+### **User Experience**
+- User satisfaction score: >4.5/5
+- Feature adoption rate: >80% for core features
+- Time saved per comparison: 75% reduction
 
-### JavaScript Rendering Enhancements
-* **Selective rendering** - only render when JS is needed  
-* **Network interception** - block analytics/fonts; record assets if enabled  
-* **Headless detection hardening** - better Playwright masking  
+### **Quality**
+- Issue detection accuracy: >95%
+- False positive rate: <5%
+- Content analysis coverage: >90%
 
 ---
 
-## 🔍 LOW PRIORITY - Advanced Analysis
-
-### Performance & Technical
-* **TTFB tracking** - total download time analysis  
-* **HTML weight** - oversized pages detection  
-* **Resource hints** - preload/prefetch/dns-prefetch analysis  
-* **Render blockers** - synchronous scripts in head  
-* **Image optimization** - file sizes, modern formats (WebP/AVIF)  
-* **Favicon validation** - app icons validation  
-* **Viewport analysis** - mobile meta tag analysis  
-* **Tap targets** - link density analysis  
-* **Backpressure controls** - adaptive concurrency from DB latency  
-* **Disk footprint management** - control HTML retention & compression levels  
-
-### Social & Metadata
-* **OpenGraph validation** - title, description, image  
-* **Twitter Cards** - analysis and validation  
-* **Social images** - aspect ratio, size, reachability  
-* **Preview images** - favored preview image analysis  
-
-### Structured Data
-* **Schema.org detection** - JSON-LD, valid types  
-* **BreadcrumbList** - validation  
-* **Product/Review schema** - required fields, ratings  
-* **Conflicting entities** - multiple entities detection  
-
-### Domain & Server Analysis
-* **SSL certificate** - validation and security headers  
-* **DNS analysis** - server response analysis  
-* **Canonicalization** - camelcase canonicalization  
-* **Search pages** - internal search pages indexing analysis  
-* **Archive pages** - tag/category archives duplicate risk  
-* **Parameter handling** - UTM, session IDs  
-* **Search blocking** - internal search pages noindex/robots blocking  
-
-### Advanced Features
-* **Content fingerprinting** - using shingle + MinHash/SimHash  
-* **Image roles** - role=presentation detection for decorative images  
-* **Meta robots conflicts** - header vs HTML conflicts  
-* **Canonical conflicts** - missing, multiple, non-200 canonicals, cross-domain  
-* **Content type validation** - charset validation  
-* **OCSP stapling** - validation  
-* **Soft 404 detection** - error detection and reporting  
-
----
-
-## 🧱 DATABASE & QUERY ADD-ONS
-* **Indexes**
-  - `urls(host)`, `urls(is_internal)`, `frontier(status, priority)`, `content(url_id)`  
-* **Materialized views**
-  - `page_analysis_latest`, `broken_links`, `non_indexable_in_sitemaps`  
-* **PRAGMAs**
-  - WAL mode, synchronous NORMAL, temp_store MEMORY  
-* **VACUUM/ANALYZE cadence**  
-
----
-
-## ⚙️ NETWORKING & SECURITY
-* **Safe-target guardrails** - block private IPs/onion by default  
-* **PII minimization** - redact emails/phones  
-* **User-agent contact field** - include contact URL/email  
-* **GDPR/CCPA compliance** - `--do-not-store-html` mode  
-* **Proxy pools** - rotating proxies with health checks  
-* **Header rotation** - language/header rotation ethics-aware  
-
----
-
-## 🧭 ETHICS & OPS
-* **Auto-pause** on widespread 403/429s  
-* **Do-not-crawl list** global + per-run override  
-* **Kill-switch** - total bandwidth/request caps  
-
----
-
-## 🧰 CLI, TESTING & DEV EXPERIENCE
-* **Seed management** - CSV/regex allowlists/denylists  
-* **Exporters** - CSV/Parquet and SQLite → Postgres sync  
-* **Report presets** - `--report seo-basics`, etc.  
-* **Deterministic test crawl** - local fixtures  
-* **Property-based tests** - for normalization/robots  
-* **Fuzz HTML parsers**  
-* **Profiler hooks** - cProfile/flamegraph support  
-* **Dockerfile & devcontainer**  
-* **Type hints + ruff + mypy + pre-commit hooks**  
-* **CI matrix** (Python 3.10–3.12)  
-* **Architecture docs** - ERD, frontier FSM, dashboards  
-
----
-
-## 🎯 API Integrations (Future)
-* **Mobile usability** - mobile-friendly analysis  
-* **Accessibility audit** - WCAG checks  
-* **Page speed** - Core Web Vitals integration  
-* **Image optimization API**  
-* **JavaScript rendering** - detect JS-dependent content  
-
----
-
-## ✅ COMPLETED FEATURES
-* Database normalization (canonicals, robots directives, anchor texts, xpaths, hrefs)  
-* Link analysis & tracking with full metadata  
-* Crawl management with pause/resume functionality  
-* Robots.txt analysis and compliance checking  
-* Retry functionality with exponential backoff  
-* Sitemap tracking and statistics  
-* Code cleanup and optimization  
-* **Authenticated crawling** - Basic/Digest HTTP authentication support (tested on staging site)
+*Last updated: October 2024*
+*Current version: 0.3*
