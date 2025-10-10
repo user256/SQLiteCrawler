@@ -130,7 +130,7 @@ async def run_crawl_comparison(
     print()
     
     # Display summary
-    await display_comparison_summary(comparison_db_path)
+    await display_comparison_summary(comparison_db_path, compare_links)
 
 
 async def init_comparison_db(db_path: str):
@@ -690,7 +690,7 @@ async def process_commercial_pages(
         await db.commit()
 
 
-async def display_comparison_summary(db_path: str):
+async def display_comparison_summary(db_path: str, compare_links: bool = False):
     """Display a summary of the comparison results."""
     async with aiosqlite.connect(db_path) as db:
         # Get basic statistics

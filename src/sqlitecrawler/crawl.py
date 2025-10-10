@@ -609,12 +609,15 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
                 if text:
                     pages_to_write.append((original_norm, final_norm, status, headers_norm, text, base_domain, redirect_chain_json))
                     
-                    # Extract content from HTML
-                    content_data = await extract_content_from_html(text, headers, original_norm)
-                    if content_data['title'] or content_data['meta_description'] or content_data['h1_tags'] or content_data['h2_tags']:
-                        # We'll need the URL ID, so we'll add this to content_to_write with a placeholder
-                        # The actual URL ID will be resolved during batch processing
-                        content_to_write.append((original_norm, content_data, base_domain))
+                    # Only extract content and hash for 200 status HTML responses (not redirects)
+                    if status == 200:
+                        # Extract content from HTML
+                        content_data = await extract_content_from_html(text, headers, final_norm)
+                        if content_data['title'] or content_data['meta_description'] or content_data['h1_tags'] or content_data['h2_tags']:
+                            # We'll need the URL ID, so we'll add this to content_to_write with a placeholder
+                            # The actual URL ID will be resolved during batch processing
+                            # Store content hash against the FINAL URL (after redirects), not the original URL
+                            content_to_write.append((final_norm, content_data, base_domain))
                 if text:
                     # Extract links with metadata for internal links tracking
                     links, detailed_links = await extract_links_with_metadata(text, final_norm)

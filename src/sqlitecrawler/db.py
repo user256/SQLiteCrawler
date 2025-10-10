@@ -678,6 +678,11 @@ LEFT JOIN indexability i ON u.id = i.url_id
 LEFT JOIN canonical_urls cu ON u.id = cu.url_id
 LEFT JOIN urls canonical_urls_table ON cu.canonical_url_id = canonical_urls_table.id
 WHERE u.classification IN ('internal', 'network')  -- Only show internal and network URLs
+  AND u.id NOT IN (
+    SELECT DISTINCT il.target_url_id 
+    FROM internal_links il 
+    WHERE il.url_fragment IS NOT NULL AND il.url_fragment != ''
+  )  -- Exclude URLs with hash fragments from crawl overview
 GROUP BY u.id;
 
 -- View for all links from internal pages (internal, network, and external targets)
@@ -1553,6 +1558,18 @@ async def batch_write_content_with_url_resolution(content_data: List[Tuple[str, 
                         continue
                     
                     url_id = row[0]
+                    
+                    # Check if this URL has any redirect history (either as source or destination)
+                    # If it does, don't store content hashes - only store on URLs with no redirect history
+                    cursor = await conn.execute("""
+                        SELECT 1 FROM redirects WHERE source_url_id = ? OR target_url_id = ?
+                    """, (url_id, url_id))
+                    has_redirect_history = await cursor.fetchone()
+                    
+                    if has_redirect_history:
+                        # This URL has redirect history, skip content hashing
+                        print(f"  -> URL {url} has redirect history, skipping content hashing")
+                        continue
                     
                     # Get or create normalized IDs
                     meta_description_id = await get_or_create_meta_description_id(content_info['meta_description'], conn)
