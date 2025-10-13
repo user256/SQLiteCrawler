@@ -678,11 +678,7 @@ LEFT JOIN indexability i ON u.id = i.url_id
 LEFT JOIN canonical_urls cu ON u.id = cu.url_id
 LEFT JOIN urls canonical_urls_table ON cu.canonical_url_id = canonical_urls_table.id
 WHERE u.classification IN ('internal', 'network')  -- Only show internal and network URLs
-  AND u.id NOT IN (
-    SELECT DISTINCT il.target_url_id 
-    FROM internal_links il 
-    WHERE il.url_fragment IS NOT NULL AND il.url_fragment != ''
-  )  -- Exclude URLs with hash fragments from crawl overview
+  AND u.url NOT LIKE '%#%'  -- Exclude URLs with hash fragments from crawl overview
 GROUP BY u.id;
 
 -- View for all links from internal pages (internal, network, and external targets)
