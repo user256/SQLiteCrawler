@@ -250,6 +250,13 @@ CREATE TABLE IF NOT EXISTS anchor_texts (
 );
 CREATE INDEX IF NOT EXISTS idx_anchor_texts_text ON anchor_texts(text);
 
+-- Fragments table for URL fragments (hash parts)
+CREATE TABLE IF NOT EXISTS fragments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  fragment TEXT UNIQUE NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fragments_fragment ON fragments(fragment);
+
 -- Normalized HTML language codes table
 CREATE TABLE IF NOT EXISTS html_languages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -279,7 +286,7 @@ CREATE TABLE IF NOT EXISTS internal_links (
   anchor_text_id INTEGER,  -- Reference to normalized anchor text
   xpath_id INTEGER,  -- Reference to normalized xpath
   href_url_id INTEGER NOT NULL,  -- The href URL (from urls table)
-  url_fragment TEXT,  -- #fragment part (only if present)
+  fragment_id INTEGER,  -- Reference to fragments table (nullable)
   url_parameters TEXT,  -- ?param=value part (only if present)
   discovered_at INTEGER NOT NULL,
   FOREIGN KEY (source_url_id) REFERENCES urls (id),
@@ -287,6 +294,7 @@ CREATE TABLE IF NOT EXISTS internal_links (
   FOREIGN KEY (anchor_text_id) REFERENCES anchor_texts (id),
   FOREIGN KEY (xpath_id) REFERENCES xpaths (id),
   FOREIGN KEY (href_url_id) REFERENCES urls (id),
+  FOREIGN KEY (fragment_id) REFERENCES fragments (id),
   UNIQUE(source_url_id, xpath_id)  -- Prevent duplicate links with same xpath
 );
 CREATE INDEX IF NOT EXISTS idx_internal_links_source ON internal_links(source_url_id);
@@ -678,7 +686,6 @@ LEFT JOIN indexability i ON u.id = i.url_id
 LEFT JOIN canonical_urls cu ON u.id = cu.url_id
 LEFT JOIN urls canonical_urls_table ON cu.canonical_url_id = canonical_urls_table.id
 WHERE u.classification IN ('internal', 'network')  -- Only show internal and network URLs
-  AND u.url NOT LIKE '%#%'  -- Exclude URLs with hash fragments from crawl overview
 GROUP BY u.id;
 
 -- View for all links from internal pages (internal, network, and external targets)
@@ -693,7 +700,7 @@ SELECT
     x.xpath,
     href_urls.url as href,
     href_urls.classification as href_classification,
-    il.url_fragment,
+    f.fragment as url_fragment,
     il.url_parameters,
     il.discovered_at
 FROM internal_links il
@@ -702,7 +709,8 @@ JOIN frontier f1 ON u1.id = f1.url_id  -- Only show links from URLs that were ac
 LEFT JOIN urls u2 ON il.target_url_id = u2.id
 LEFT JOIN anchor_texts at ON il.anchor_text_id = at.id
 LEFT JOIN xpaths x ON il.xpath_id = x.id
-LEFT JOIN urls href_urls ON il.href_url_id = href_urls.id;
+LEFT JOIN urls href_urls ON il.href_url_id = href_urls.id
+LEFT JOIN fragments f ON il.fragment_id = f.id;
 
 -- View for internal-to-network links only
 -- Only shows links from URLs that were actually crawled (have frontier status)
@@ -716,7 +724,7 @@ SELECT
     x.xpath,
     href_urls.url as href,
     href_urls.classification as href_classification,
-    il.url_fragment,
+    f.fragment as url_fragment,
     il.url_parameters,
     il.discovered_at
 FROM internal_links il
@@ -726,6 +734,7 @@ LEFT JOIN urls u2 ON il.target_url_id = u2.id
 LEFT JOIN anchor_texts at ON il.anchor_text_id = at.id
 LEFT JOIN xpaths x ON il.xpath_id = x.id
 LEFT JOIN urls href_urls ON il.href_url_id = href_urls.id
+LEFT JOIN fragments f ON il.fragment_id = f.id
 WHERE u2.classification = 'network';  -- Only internal-to-network links
 
 -- View for internal-to-external links only
@@ -740,7 +749,7 @@ SELECT
     x.xpath,
     href_urls.url as href,
     href_urls.classification as href_classification,
-    il.url_fragment,
+    f.fragment as url_fragment,
     il.url_parameters,
     il.discovered_at
 FROM internal_links il
@@ -750,6 +759,7 @@ LEFT JOIN urls u2 ON il.target_url_id = u2.id
 LEFT JOIN anchor_texts at ON il.anchor_text_id = at.id
 LEFT JOIN xpaths x ON il.xpath_id = x.id
 LEFT JOIN urls href_urls ON il.href_url_id = href_urls.id
+LEFT JOIN fragments f ON il.fragment_id = f.id
 WHERE u2.classification = 'external';  -- Only internal-to-external links
 
 -- View for sitemap statistics
@@ -968,12 +978,12 @@ SELECT
     at.text as anchor_text,
     CASE WHEN at.text LIKE '[IMG:%' THEN 1 ELSE 0 END as is_image,
     x.xpath,
-    il.url_fragment,                        -- Original fragment
+    f.fragment as url_fragment,             -- Fragment from fragments table
     il.url_parameters,                      -- Original parameters
     il.discovered_at,
     -- Additional analysis fields
     CASE 
-        WHEN il.url_fragment IS NOT NULL AND il.url_fragment != '' THEN 1 
+        WHEN f.fragment IS NOT NULL AND f.fragment != '' THEN 1 
         ELSE 0 
     END as has_fragment,
     CASE 
@@ -990,7 +1000,8 @@ JOIN frontier f1 ON u1.id = f1.url_id  -- Only show links from URLs that were ac
 LEFT JOIN urls u2 ON il.target_url_id = u2.id           -- Normalized target
 LEFT JOIN urls href_urls ON il.href_url_id = href_urls.id  -- Original href
 LEFT JOIN anchor_texts at ON il.anchor_text_id = at.id
-LEFT JOIN xpaths x ON il.xpath_id = x.id;
+LEFT JOIN xpaths x ON il.xpath_id = x.id
+LEFT JOIN fragments f ON il.fragment_id = f.id;
 
 -- View for UTM parameter analysis
 CREATE VIEW IF NOT EXISTS view_utm_links AS
@@ -1005,6 +1016,7 @@ JOIN urls u1 ON il.source_url_id = u1.id
 JOIN frontier f1 ON u1.id = f1.url_id
 LEFT JOIN urls href_urls ON il.href_url_id = href_urls.id
 LEFT JOIN anchor_texts at ON il.anchor_text_id = at.id
+LEFT JOIN fragments f ON il.fragment_id = f.id
 WHERE il.url_parameters LIKE '%utm_%';
 
 -- View for fragment/anchor link analysis
@@ -1020,7 +1032,8 @@ JOIN urls u1 ON il.source_url_id = u1.id
 JOIN frontier f1 ON u1.id = f1.url_id
 LEFT JOIN urls href_urls ON il.href_url_id = href_urls.id
 LEFT JOIN anchor_texts at ON il.anchor_text_id = at.id
-WHERE il.url_fragment IS NOT NULL AND il.url_fragment != '';
+LEFT JOIN fragments f ON il.fragment_id = f.id
+WHERE f.fragment IS NOT NULL AND f.fragment != '';
 
 --- View for exact duplicate content detection
 CREATE VIEW IF NOT EXISTS view_exact_duplicates AS
@@ -1099,6 +1112,63 @@ async def init_crawl_db(db_path: str = CRAWL_DB_PATH):
             if stmt:
                 await db.execute(stmt)
         await db.commit()
+        
+        # Run migrations for fragment table
+        await migrate_fragment_table(db)
+
+async def migrate_fragment_table(db):
+    """Migrate existing databases to use fragment table."""
+    try:
+        # Check if fragments table exists
+        cursor = await db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='fragments'")
+        fragments_exists = await cursor.fetchone()
+        
+        if not fragments_exists:
+            # Create fragments table
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS fragments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    fragment TEXT UNIQUE NOT NULL
+                )
+            """)
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_fragments_fragment ON fragments(fragment)")
+        
+        # Check if internal_links has fragment_id column
+        cursor = await db.execute("PRAGMA table_info(internal_links)")
+        columns = await cursor.fetchall()
+        column_names = [col[1] for col in columns]
+        
+        if 'fragment_id' not in column_names:
+            # Add fragment_id column
+            await db.execute("ALTER TABLE internal_links ADD COLUMN fragment_id INTEGER")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_internal_links_fragment ON internal_links(fragment_id)")
+            
+            # Migrate existing url_fragment data to fragments table
+            cursor = await db.execute("SELECT DISTINCT url_fragment FROM internal_links WHERE url_fragment IS NOT NULL AND url_fragment != ''")
+            fragments = await cursor.fetchall()
+            
+            for (fragment,) in fragments:
+                # Insert fragment into fragments table
+                cursor = await db.execute("INSERT OR IGNORE INTO fragments (fragment) VALUES (?)", (fragment,))
+                fragment_id = cursor.lastrowid
+                
+                # Update internal_links to use fragment_id
+                await db.execute("""
+                    UPDATE internal_links 
+                    SET fragment_id = (SELECT id FROM fragments WHERE fragment = ?)
+                    WHERE url_fragment = ?
+                """, (fragment, fragment))
+            
+            # Drop the old url_fragment column (SQLite doesn't support DROP COLUMN, so we'll leave it)
+            # The views will use the new fragment_id approach
+        
+        await db.commit()
+        print("Fragment table migration completed successfully")
+        
+    except Exception as e:
+        print(f"Error during fragment table migration: {e}")
+        await db.rollback()
+        raise
 
 # ------------------ URL classification ------------------
 
@@ -1800,8 +1870,13 @@ async def batch_write_internal_links(links_data: List[Tuple[str, list, str]], cr
                         anchor_text_id = await get_or_create_anchor_text_id(link_info['anchor_text'], conn)
                         xpath_id = await get_or_create_xpath_id(link_info['xpath'], conn)
                         
-                        # Store ORIGINAL href URL (for link analysis)
-                        href_url_id = await get_or_create_href_url_id(original_href, base_domain, conn)
+                        # Extract fragment from original href
+                        from urllib.parse import urlparse
+                        parsed_original = urlparse(original_href)
+                        fragment_id = await get_or_create_fragment_id(parsed_original.fragment, conn)
+                        
+                        # Store NORMALIZED href URL (without fragment) for crawling
+                        href_url_id = await get_or_create_href_url_id(target_url, base_domain, conn)
                         
                         # Try to get NORMALIZED target URL ID (for crawling)
                         target_url_id = None
@@ -1821,7 +1896,7 @@ async def batch_write_internal_links(links_data: List[Tuple[str, list, str]], cr
                             """
                             INSERT OR IGNORE INTO internal_links(
                                 source_url_id, target_url_id, anchor_text_id, xpath_id, href_url_id,
-                                url_fragment, url_parameters, discovered_at
+                                fragment_id, url_parameters, discovered_at
                             )
                             VALUES (?,?,?,?,?,?,?,?)
                             """,
@@ -1831,7 +1906,7 @@ async def batch_write_internal_links(links_data: List[Tuple[str, list, str]], cr
                                 anchor_text_id,
                                 xpath_id,
                                 href_url_id,    # Original href URL ID for analysis
-                                link_info.get('fragment', url_components['url_fragment']),  # Use new fragment if available
+                                fragment_id,    # Fragment ID reference
                                 link_info.get('parameters', url_components['url_parameters']),  # Use new parameters if available
                                 now
                             )
@@ -1882,6 +1957,19 @@ async def get_or_create_anchor_text_id(anchor_text: str, conn: aiosqlite.Connect
         return row[0]
     
     cursor = await conn.execute("INSERT INTO anchor_texts (text) VALUES (?)", (anchor_text,))
+    return cursor.lastrowid
+
+async def get_or_create_fragment_id(fragment: str, conn: aiosqlite.Connection) -> int:
+    """Get or create fragment ID in the fragments table."""
+    if not fragment:
+        return None
+    
+    cursor = await conn.execute("SELECT id FROM fragments WHERE fragment = ?", (fragment,))
+    row = await cursor.fetchone()
+    if row:
+        return row[0]
+    
+    cursor = await conn.execute("INSERT INTO fragments (fragment) VALUES (?)", (fragment,))
     return cursor.lastrowid
 
 async def get_or_create_xpath_id(xpath: str, conn: aiosqlite.Connection) -> int:
