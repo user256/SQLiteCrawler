@@ -1,5 +1,8 @@
 """
-Crawl comparison functionality for comparing origin to staging sites/across domain
+Crawl comparison functionality for comparing origin to staging sites/across domain.
+
+Copyright (c) 2024 SQLiteCrawler Contributors
+Licensed under the MIT License.
 """
 import asyncio
 import aiosqlite

@@ -1,6 +1,9 @@
 """
 Schema.org structured data extraction and parsing.
 
+Copyright (c) 2024 SQLiteCrawler Contributors
+Licensed under the MIT License.
+
 This module handles extraction of structured data from HTML pages including:
 - JSON-LD (application/ld+json)
 - Microdata (itemscope, itemtype, itemprop)

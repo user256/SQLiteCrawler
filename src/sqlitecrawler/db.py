@@ -1,3 +1,10 @@
+"""
+SQLiteCrawler - Database operations and schema management.
+
+Copyright (c) 2024 SQLiteCrawler Contributors
+Licensed under the MIT License.
+"""
+
 from __future__ import annotations
 import aiosqlite, json, zlib, base64, time, asyncio
 from typing import Optional, Iterable, Tuple, List, Dict, Any

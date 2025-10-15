@@ -1,3 +1,10 @@
+"""
+SQLiteCrawler - Core crawling functionality.
+
+Copyright (c) 2024 SQLiteCrawler Contributors
+Licensed under the MIT License.
+"""
+
 from __future__ import annotations
 import asyncio
 import signal

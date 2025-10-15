@@ -266,3 +266,11 @@ We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
+The MIT License is a permissive open source license that allows you to:
+- ✅ Use the software for any purpose
+- ✅ Modify and distribute the software
+- ✅ Use the software in proprietary projects
+- ✅ Sell the software
+
+The only requirement is that you include the original copyright and license notice in any copy or substantial portion of the software.
+
