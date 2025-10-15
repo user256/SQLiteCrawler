@@ -13,6 +13,9 @@ from email.utils import parsedate_to_datetime
 
 def calculate_cache_ttl(headers: Dict[str, str], default_ttl: int = 3600) -> int:
     """Calculate cache TTL from server headers, respecting Cache-Control and Expires."""
+    # TODO: This could be more sophisticated - maybe respect ETag-based caching too?
+    # FIXME: The current logic doesn't handle all Cache-Control directives properly
+    # NOTE: This is a simplified implementation - real caching is more complex
     try:
         # Check Cache-Control header first
         cache_control = headers.get('cache-control', '').lower()
@@ -26,9 +29,9 @@ def calculate_cache_ttl(headers: Dict[str, str], default_ttl: int = 3600) -> int
                 except ValueError:
                     pass
             
-            # Check for no-cache or no-store
-            if 'no-cache' in cache_control or 'no-store' in cache_control:
-                return 0  # Don't cache
+        # Check for no-cache or no-store
+        if 'no-cache' in cache_control or 'no-store' in cache_control:
+            return 0  # Don't cache at all
         
         # Check Expires header
         expires = headers.get('expires')

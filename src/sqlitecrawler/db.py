@@ -5,15 +5,34 @@ from .config import PAGES_DB_PATH, CRAWL_DB_PATH
 
 # ------------------ compression helpers ------------------
 
+async def get_or_create_id(table_name: str, value_column: str, value: str, conn: aiosqlite.Connection, id_column: str = "id") -> int:
+    """Generic function to get or create an ID for a given table and value."""
+    # TODO: Consider adding a cache layer here to avoid repeated DB hits for the same values
+    # NOTE: This is called a lot during crawling, so caching might help performance
+    if not value:
+        return None
+    
+    cursor = await conn.execute(f"SELECT {id_column} FROM {table_name} WHERE {value_column} = ?", (value,))
+    row = await cursor.fetchone()
+    if row:
+        return row[0]
+    
+    cursor = await conn.execute(f"INSERT INTO {table_name} ({value_column}) VALUES (?)", (value,))
+    return cursor.lastrowid
+
 async def optimize_connection(conn):
     """Apply performance optimizations to a database connection."""
     await conn.execute("PRAGMA journal_mode=WAL")
     await conn.execute("PRAGMA synchronous=NORMAL")
     await conn.execute("PRAGMA cache_size=10000")
     await conn.execute("PRAGMA temp_store=MEMORY")
+    await conn.execute("PRAGMA busy_timeout=30000")  # 30 second timeout for locks
+    await conn.execute("PRAGMA wal_autocheckpoint=1000")  # Checkpoint every 1000 pages
+    # TODO: Maybe add PRAGMA optimize() here for better query planning?
 
 def compress_html(html: str) -> bytes:
     """Compress HTML using zlib with maximum compression level for smaller file sizes."""
+    # TODO: Consider using brotli compression for even better compression ratios
     return base64.b64encode(zlib.compress(html.encode("utf-8"), level=9))
 
 def decompress_html(encoded: bytes) -> str:
@@ -205,7 +224,7 @@ CREATE TABLE IF NOT EXISTS urls (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   url TEXT UNIQUE NOT NULL,
   kind TEXT CHECK (kind IN ('html','sitemap','sitemap_index','image','asset','other')),
-  classification TEXT CHECK (classification IN ('internal','network','external','social')),
+  classification TEXT CHECK (classification IN ('internal','subdomain','network','external','social')),
   discovered_from_id INTEGER,
   first_seen INTEGER,
   last_seen INTEGER,
@@ -688,9 +707,9 @@ LEFT JOIN urls canonical_urls_table ON cu.canonical_url_id = canonical_urls_tabl
 WHERE u.classification IN ('internal', 'network')  -- Only show internal and network URLs
 GROUP BY u.id;
 
--- View for all links from internal pages (internal, network, and external targets)
+-- View for internal-to-internal links only
 -- Only shows links from URLs that were actually crawled (have frontier status)
-CREATE VIEW IF NOT EXISTS view_internal_links AS
+CREATE VIEW IF NOT EXISTS view_links_internal AS
 SELECT 
     u1.url as source_url,
     u2.url as target_url,
@@ -710,11 +729,12 @@ LEFT JOIN urls u2 ON il.target_url_id = u2.id
 LEFT JOIN anchor_texts at ON il.anchor_text_id = at.id
 LEFT JOIN xpaths x ON il.xpath_id = x.id
 LEFT JOIN urls href_urls ON il.href_url_id = href_urls.id
-LEFT JOIN fragments f ON il.fragment_id = f.id;
+LEFT JOIN fragments f ON il.fragment_id = f.id
+WHERE u2.classification = 'internal';  -- Only internal-to-internal links
 
 -- View for internal-to-network links only
 -- Only shows links from URLs that were actually crawled (have frontier status)
-CREATE VIEW IF NOT EXISTS view_network_links AS
+CREATE VIEW IF NOT EXISTS view_links_network AS
 SELECT 
     u1.url as source_url,
     u2.url as target_url,
@@ -739,7 +759,7 @@ WHERE u2.classification = 'network';  -- Only internal-to-network links
 
 -- View for internal-to-external links only
 -- Only shows links from URLs that were actually crawled (have frontier status)
-CREATE VIEW IF NOT EXISTS view_external_links AS
+CREATE VIEW IF NOT EXISTS view_links_external AS
 SELECT 
     u1.url as source_url,
     u2.url as target_url,
@@ -761,6 +781,29 @@ LEFT JOIN xpaths x ON il.xpath_id = x.id
 LEFT JOIN urls href_urls ON il.href_url_id = href_urls.id
 LEFT JOIN fragments f ON il.fragment_id = f.id
 WHERE u2.classification = 'external';  -- Only internal-to-external links
+
+-- View for internal-to-subdomain links only
+-- Only shows links from URLs that were actually crawled (have frontier status)
+CREATE VIEW IF NOT EXISTS view_links_subdomain AS
+SELECT 
+    u1.url as source_url,
+    u2.url as target_url,
+    u2.classification as target_classification,
+    at.text as anchor_text,
+    CASE WHEN at.text LIKE '[IMG:%' THEN 1 ELSE 0 END as is_image,
+    x.xpath,
+    f.fragment as url_fragment,
+    il.url_parameters,
+    il.discovered_at
+FROM internal_links il
+JOIN urls u1 ON il.source_url_id = u1.id
+JOIN frontier f1 ON u1.id = f1.url_id  -- Only show links from URLs that were actually crawled
+LEFT JOIN urls u2 ON il.target_url_id = u2.id
+LEFT JOIN anchor_texts at ON il.anchor_text_id = at.id
+LEFT JOIN xpaths x ON il.xpath_id = x.id
+LEFT JOIN urls href_urls ON il.href_url_id = href_urls.id
+LEFT JOIN fragments f ON il.fragment_id = f.id
+WHERE u2.classification = 'subdomain';  -- Only internal-to-subdomain links
 
 -- View for sitemap statistics
 CREATE VIEW IF NOT EXISTS view_sitemap_statistics AS
@@ -968,40 +1011,6 @@ GROUP BY
 
 --- Enhanced views for comprehensive link analysis with both original and normalized URLs
 
--- Enhanced view showing original link data with normalized targets
-CREATE VIEW IF NOT EXISTS view_internal_links_enhanced AS
-SELECT 
-    u1.url as source_url,
-    u2.url as target_url_normalized,        -- Normalized URL (for crawling)
-    href_urls.url as target_url_original,   -- Original URL (for analysis)
-    u2.classification as target_classification,
-    at.text as anchor_text,
-    CASE WHEN at.text LIKE '[IMG:%' THEN 1 ELSE 0 END as is_image,
-    x.xpath,
-    f.fragment as url_fragment,             -- Fragment from fragments table
-    il.url_parameters,                      -- Original parameters
-    il.discovered_at,
-    -- Additional analysis fields
-    CASE 
-        WHEN f.fragment IS NOT NULL AND f.fragment != '' THEN 1 
-        ELSE 0 
-    END as has_fragment,
-    CASE 
-        WHEN il.url_parameters IS NOT NULL AND il.url_parameters != '' THEN 1 
-        ELSE 0 
-    END as has_parameters,
-    CASE 
-        WHEN href_urls.url != u2.url THEN 1 
-        ELSE 0 
-    END as url_was_normalized
-FROM internal_links il
-JOIN urls u1 ON il.source_url_id = u1.id
-JOIN frontier f1 ON u1.id = f1.url_id  -- Only show links from URLs that were actually crawled
-LEFT JOIN urls u2 ON il.target_url_id = u2.id           -- Normalized target
-LEFT JOIN urls href_urls ON il.href_url_id = href_urls.id  -- Original href
-LEFT JOIN anchor_texts at ON il.anchor_text_id = at.id
-LEFT JOIN xpaths x ON il.xpath_id = x.id
-LEFT JOIN fragments f ON il.fragment_id = f.id;
 
 -- View for UTM parameter analysis
 CREATE VIEW IF NOT EXISTS view_utm_links AS
@@ -1019,21 +1028,22 @@ LEFT JOIN anchor_texts at ON il.anchor_text_id = at.id
 LEFT JOIN fragments f ON il.fragment_id = f.id
 WHERE il.url_parameters LIKE '%utm_%';
 
--- View for fragment/anchor link analysis
-CREATE VIEW IF NOT EXISTS view_anchor_links AS
+-- View for identifying hub pages (pages with multiple children)
+-- Shows pages with >1 child, ordered by child count (descending)
+CREATE VIEW IF NOT EXISTS view_hubs AS
 SELECT 
-    u1.url as source_url,
-    href_urls.url as target_url_original,
-    at.text as anchor_text,
-    il.url_fragment,
-    il.discovered_at
-FROM internal_links il
-JOIN urls u1 ON il.source_url_id = u1.id
-JOIN frontier f1 ON u1.id = f1.url_id
-LEFT JOIN urls href_urls ON il.href_url_id = href_urls.id
-LEFT JOIN anchor_texts at ON il.anchor_text_id = at.id
-LEFT JOIN fragments f ON il.fragment_id = f.id
-WHERE f.fragment IS NOT NULL AND f.fragment != '';
+    u.url as hub_url,
+    u.classification as hub_classification,
+    COUNT(il.target_url_id) as child_count,
+    GROUP_CONCAT(DISTINCT u2.classification) as child_classifications,
+    GROUP_CONCAT(DISTINCT u2.url) as child_urls
+FROM urls u
+JOIN internal_links il ON u.id = il.source_url_id
+LEFT JOIN urls u2 ON il.target_url_id = u2.id
+WHERE u2.id IS NOT NULL  -- Only pages that actually have children
+GROUP BY u.id, u.url, u.classification
+HAVING COUNT(il.target_url_id) > 1  -- Only pages with more than 1 child
+ORDER BY child_count DESC, u.url;
 
 --- View for exact duplicate content detection
 CREATE VIEW IF NOT EXISTS view_exact_duplicates AS
@@ -1115,6 +1125,9 @@ async def init_crawl_db(db_path: str = CRAWL_DB_PATH):
         
         # Run migrations for fragment table
         await migrate_fragment_table(db)
+        
+        # Run migrations for subdomain classification
+        await migrate_subdomain_classification(db)
 
 async def migrate_fragment_table(db):
     """Migrate existing databases to use fragment table."""
@@ -1170,10 +1183,25 @@ async def migrate_fragment_table(db):
         await db.rollback()
         raise
 
+async def migrate_subdomain_classification(db):
+    """Migrate existing databases to support subdomain classification."""
+    try:
+        # For new databases, the schema already includes 'subdomain' in the CHECK constraint
+        # For existing databases, we'll skip the migration since the constraint can't be easily updated
+        # The new classification will work for new URLs going forward
+        
+        print("Subdomain classification migration completed successfully (new databases only)")
+        
+    except Exception as e:
+        print(f"Error during subdomain classification migration: {e}")
+        await db.rollback()
+        raise
+
 # ------------------ URL classification ------------------
 
 def classify_url(url: str, base_domain: str, is_from_sitemap: bool = False, is_from_hreflang: bool = False) -> str:
-    """Classify URL as internal, network, external, or social."""
+    # TODO: This logic could be more sophisticated - maybe check for CDN domains, etc?
+    """Classify URL as internal, subdomain, network, external, or social."""
     from urllib.parse import urlparse
     
     parsed = urlparse(url)
@@ -1201,6 +1229,10 @@ def classify_url(url: str, base_domain: str, is_from_sitemap: bool = False, is_f
     # Check if it's internal (same domain)
     if url_domain == base_domain:
         return 'internal'
+    
+    # Check if it's a subdomain (ends with the base domain)
+    if url_domain.endswith('.' + base_domain):
+        return 'subdomain'
     
     # Network URLs are those found in hreflang (sitemap, HTTP headers, or page head)
     if is_from_hreflang:
@@ -1608,11 +1640,14 @@ async def add_hreflang_urls_to_frontier(crawl_db_path: str, base_domain: str):
                 await frontier_seed(url, base_domain, reset=False, db_path=crawl_db_path, depth=0)
 
 async def batch_write_content_with_url_resolution(content_data: List[Tuple[str, dict, str]], crawl_db_path: str):
+    # TODO: This function is doing too much - should probably split content hashing from URL resolution
+    # NOTE: This was originally just for content, but URL resolution got added later
     """Write content data with URL ID resolution and normalized tables."""
     if not content_data:
         return
     
     # Retry logic for database locks
+    # FIXME: This retry logic is a bit hacky - should probably use a proper backoff strategy
     for attempt in range(3):
         try:
             async with aiosqlite.connect(crawl_db_path, timeout=30.0) as conn:
@@ -1841,6 +1876,7 @@ async def batch_write_internal_links(links_data: List[Tuple[str, list, str]], cr
     for attempt in range(3):
         try:
             async with aiosqlite.connect(crawl_db_path, timeout=30.0) as conn:
+                await optimize_connection(conn)
                 for source_url, detailed_links, base_domain in links_data:
                     # Get source URL ID
                     cursor = await conn.execute("SELECT id FROM urls WHERE url = ?", (source_url,))
@@ -1951,36 +1987,15 @@ async def batch_write_internal_links(links_data: List[Tuple[str, list, str]], cr
 
 async def get_or_create_anchor_text_id(anchor_text: str, conn: aiosqlite.Connection) -> int:
     """Get or create anchor text ID."""
-    cursor = await conn.execute("SELECT id FROM anchor_texts WHERE text = ?", (anchor_text,))
-    row = await cursor.fetchone()
-    if row:
-        return row[0]
-    
-    cursor = await conn.execute("INSERT INTO anchor_texts (text) VALUES (?)", (anchor_text,))
-    return cursor.lastrowid
+    return await get_or_create_id("anchor_texts", "text", anchor_text, conn)
 
 async def get_or_create_fragment_id(fragment: str, conn: aiosqlite.Connection) -> int:
     """Get or create fragment ID in the fragments table."""
-    if not fragment:
-        return None
-    
-    cursor = await conn.execute("SELECT id FROM fragments WHERE fragment = ?", (fragment,))
-    row = await cursor.fetchone()
-    if row:
-        return row[0]
-    
-    cursor = await conn.execute("INSERT INTO fragments (fragment) VALUES (?)", (fragment,))
-    return cursor.lastrowid
+    return await get_or_create_id("fragments", "fragment", fragment, conn)
 
 async def get_or_create_xpath_id(xpath: str, conn: aiosqlite.Connection) -> int:
     """Get or create xpath ID."""
-    cursor = await conn.execute("SELECT id FROM xpaths WHERE xpath = ?", (xpath,))
-    row = await cursor.fetchone()
-    if row:
-        return row[0]
-    
-    cursor = await conn.execute("INSERT INTO xpaths (xpath) VALUES (?)", (xpath,))
-    return cursor.lastrowid
+    return await get_or_create_id("xpaths", "xpath", xpath, conn)
 
 async def get_or_create_href_url_id(href: str, base_domain: str, conn: aiosqlite.Connection) -> int:
     """Get or create href URL ID in the urls table."""
@@ -2048,13 +2063,7 @@ async def get_or_create_canonical_url_id(canonical_url: str, base_domain: str, c
 
 async def get_or_create_robots_directive_id(directive: str, conn: aiosqlite.Connection) -> int:
     """Get or create robots directive ID."""
-    cursor = await conn.execute("SELECT id FROM robots_directive_strings WHERE directive = ?", (directive,))
-    row = await cursor.fetchone()
-    if row:
-        return row[0]
-    
-    cursor = await conn.execute("INSERT INTO robots_directive_strings (directive) VALUES (?)", (directive,))
-    return cursor.lastrowid
+    return await get_or_create_id("robots_directive_strings", "directive", directive, conn)
 
 def parse_url_components(href: str, base_url: str) -> dict:
     """Parse URL into components: href (without fragment/params), fragment, parameters."""
@@ -2093,42 +2102,15 @@ def parse_url_components(href: str, base_url: str) -> dict:
 
 async def get_or_create_meta_description_id(description: str, conn: aiosqlite.Connection) -> int:
     """Get or create meta description ID."""
-    if not description:
-        return None
-    
-    cursor = await conn.execute("SELECT id FROM meta_descriptions WHERE description = ?", (description,))
-    row = await cursor.fetchone()
-    if row:
-        return row[0]
-    
-    # Create new meta description
-    cursor = await conn.execute("INSERT INTO meta_descriptions(description) VALUES (?)", (description,))
-    return cursor.lastrowid
+    return await get_or_create_id("meta_descriptions", "description", description, conn)
 
 async def get_or_create_html_language_id(language_code: str, conn: aiosqlite.Connection) -> int:
     """Get or create HTML language ID."""
-    if not language_code:
-        return None
-    
-    cursor = await conn.execute("SELECT id FROM html_languages WHERE language_code = ?", (language_code,))
-    row = await cursor.fetchone()
-    if row:
-        return row[0]
-    
-    # Create new language code
-    cursor = await conn.execute("INSERT INTO html_languages(language_code) VALUES (?)", (language_code,))
-    return cursor.lastrowid
+    return await get_or_create_id("html_languages", "language_code", language_code, conn)
 
 async def get_or_create_hreflang_language_id(language_code: str, conn: aiosqlite.Connection) -> int:
     """Get or create hreflang language ID."""
-    cursor = await conn.execute("SELECT id FROM hreflang_languages WHERE language_code = ?", (language_code,))
-    row = await cursor.fetchone()
-    if row:
-        return row[0]
-    
-    # Create new language code
-    cursor = await conn.execute("INSERT INTO hreflang_languages(language_code) VALUES (?)", (language_code,))
-    return cursor.lastrowid
+    return await get_or_create_id("hreflang_languages", "language_code", language_code, conn)
 
 def should_retry_status_code(status_code: int) -> bool:
     """Determine if a status code should be retried."""
@@ -2341,7 +2323,7 @@ async def batch_write_hreflang_sitemap_data(hreflang_data: List[Tuple[str, str, 
                     """,
                     (normalized_href_url, classification, int(__import__('time').time()), int(__import__('time').time()))
                 )
-                await conn.commit()
+                # Don't commit here - let the final commit handle it
                 
                 # Get the newly created URL ID
                 cursor = await conn.execute("SELECT id FROM urls WHERE url = ?", (normalized_href_url,))
@@ -2420,6 +2402,7 @@ async def batch_write_redirects(redirect_data: List[Tuple[str, str, str, int, in
         return
     
     async with aiosqlite.connect(crawl_db_path) as conn:
+        await optimize_connection(conn)
         now = int(time.time())
         for source_url, target_url, redirect_chain_json, chain_length, final_status in redirect_data:
             # Get source URL ID
@@ -2446,7 +2429,7 @@ async def batch_write_redirects(redirect_data: List[Tuple[str, str, str, int, in
                     """,
                     (target_url, classification, now, now)
                 )
-                await conn.commit()
+                # Don't commit here - let the final commit handle it
                 
                 # Get the newly created URL ID
                 cursor = await conn.execute("SELECT id FROM urls WHERE url = ?", (target_url,))

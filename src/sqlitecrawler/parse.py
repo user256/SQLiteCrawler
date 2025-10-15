@@ -26,6 +26,8 @@ def normalize_url_hardened(url: str) -> str:
     
     Cached with LRU cache (10,000 entries) for performance.
     """
+    # TODO: Maybe we should also normalize common tracking parameters like fbclid, gclid, etc?
+    # NOTE: This is getting pretty complex - might need to refactor into separate functions
     parsed = urlparse(url)
     
     # 1. Normalize scheme (lowercase)
@@ -57,6 +59,7 @@ def normalize_url_hardened(url: str) -> str:
         params = parse_qs(query, keep_blank_values=True)
         
         # UTM parameters to remove
+        # NOTE: This list is incomplete - will need to add more tracking params
         utm_params = {
             'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 
             'utm_content', 'utm_id', 'utm_source_platform', 

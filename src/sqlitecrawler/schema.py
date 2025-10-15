@@ -24,6 +24,8 @@ def create_schema_content_hash(schema_data: Dict[str, Any]) -> str:
     content = json.dumps(normalized, sort_keys=True, separators=(',', ':'))
     
     # Create SHA256 hash
+    # TODO: Consider using a faster hash like xxHash for large schemas
+    # NOTE: SHA256 is probably overkill for this use case, but it's what we have
     return hashlib.sha256(content.encode('utf-8')).hexdigest()
 
 
@@ -35,6 +37,7 @@ def normalize_for_hashing(data: Dict[str, Any]) -> Dict[str, Any]:
     normalized = data.copy()
     
     # Remove fields that vary but don't affect schema uniqueness
+    # XXX: This list might need to be expanded as we encounter more edge cases
     fields_to_remove = [
         '@id',           # IDs are often auto-generated
         'discovered_at', # Timestamps
@@ -63,6 +66,8 @@ def normalize_for_hashing(data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def extract_schema_data(html: str, base_url: str) -> List[Dict[str, Any]]:
+    # TODO: This function is getting pretty long - maybe split into separate extractors?
+    # NOTE: This started simple but grew as we added more schema types
     """
     Extract all structured data from HTML.
     Returns a list of schema data dictionaries.
@@ -227,7 +232,7 @@ def extract_microdata(soup: BeautifulSoup, base_url: str) -> List[Dict[str, Any]
                 **properties
             }
             
-            validation_errors = validate_schema_data(normalized_data, schema_type)
+            validation_errors, severity = validate_schema_data(normalized_data, schema_type)
             
             schema_data.append({
                 'format': 'microdata',
@@ -236,7 +241,8 @@ def extract_microdata(soup: BeautifulSoup, base_url: str) -> List[Dict[str, Any]
                 'parsed_data': json.dumps(normalized_data),
                 'position': i,
                 'is_valid': len(validation_errors) == 0,
-                'validation_errors': validation_errors
+                'validation_errors': validation_errors,
+                'severity': severity
             })
             
         except Exception as e:
@@ -323,7 +329,7 @@ def extract_rdfa(soup: BeautifulSoup, base_url: str) -> List[Dict[str, Any]]:
                 **properties
             }
             
-            validation_errors = validate_schema_data(normalized_data, schema_type)
+            validation_errors, severity = validate_schema_data(normalized_data, schema_type)
             
             schema_data.append({
                 'format': 'rdfa',
@@ -332,7 +338,8 @@ def extract_rdfa(soup: BeautifulSoup, base_url: str) -> List[Dict[str, Any]]:
                 'parsed_data': json.dumps(normalized_data),
                 'position': i,
                 'is_valid': len(validation_errors) == 0,
-                'validation_errors': validation_errors
+                'validation_errors': validation_errors,
+                'severity': severity
             })
             
         except Exception as e:
@@ -422,6 +429,8 @@ def normalize_schema_data(data: Dict[str, Any], base_url: str) -> Dict[str, Any]
 
 
 def validate_schema_data(data: Dict[str, Any], schema_type: str) -> Tuple[List[str], str]:
+    # TODO: This is pretty basic validation - could be enhanced with actual schema.org validation
+    # NOTE: We're just doing basic type checking here, not full schema validation
     """Validate schema data and return (validation_errors, severity_level)."""
     errors = []
     severity = 'info'  # Default severity

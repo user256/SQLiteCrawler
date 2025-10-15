@@ -13,6 +13,8 @@ def clean_content_for_hashing(html: str) -> str:
     Clean HTML content for consistent hashing by removing dynamic elements
     and normalizing structure.
     """
+    # TODO: Maybe we should also remove ads and tracking pixels for better content matching?
+    # NOTE: This might be too aggressive and could remove legitimate content
     if not html:
         return ""
     
@@ -52,6 +54,7 @@ def clean_content_for_hashing(html: str) -> str:
         
     except Exception as e:
         # Fallback to simple text extraction if parsing fails
+        # HACK: This fallback might not be ideal for content comparison
         print(f"Warning: Failed to parse HTML for hashing: {e}")
         return html
 
@@ -66,6 +69,8 @@ def generate_content_hashes(html_content: str) -> Dict[str, str]:
     Returns:
         Dictionary with 'content_hash_sha256', 'content_hash_simhash', and 'content_length'
     """
+    # TODO: Consider adding a content length threshold - no point hashing tiny pages
+    # NOTE: This might be too aggressive for some sites with minimal content
     if not html_content:
         return {
             'content_hash_sha256': '',

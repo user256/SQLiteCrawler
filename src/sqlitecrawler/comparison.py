@@ -1,5 +1,5 @@
 """
-Crawl comparison functionality for comparing origin and staging domains.
+Crawl comparison functionality for comparing origin to staging sites/across domain
 """
 import asyncio
 import aiosqlite
@@ -27,18 +27,21 @@ async def run_crawl_comparison(
     max_workers: int = 6,
     verbose: bool = False
 ):
+    # TODO: This function is getting pretty complex - maybe split into smaller functions?
+    # HACK: The error handling here is a bit messy - should probably refactor
+    # NOTE: This was originally much simpler but grew over time
     """
     Run a comprehensive crawl comparison between origin and staging domains.
     
     Args:
-        origin_url: The origin/production domain URL
+        origin_url: The origin/production domain
         staging_url: The staging domain URL to compare against
         commercial_csv: Optional CSV file with commercial page URLs
         compare_links: Whether to enable detailed link comparison
-        use_js: Whether to use JavaScript rendering
+        use_js: Whether to use JavaScript rendering (should be used consistenly on both origin and staging
         limits: Crawl limits configuration
         http_config: HTTP configuration
-        allow_external: Whether to allow external URLs
+        allow_external: Whether to crawl external URLs default false
         max_workers: Maximum number of workers
         verbose: Whether to enable verbose output
     """

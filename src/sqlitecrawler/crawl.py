@@ -48,6 +48,8 @@ def normalize_url_for_storage(url: str) -> str:
         ''  # Remove fragment
     ))
     # Preserve trailing slashes - don't remove them
+    # TODO: Should we also normalize query parameter order for better deduplication?
+    # HACK: This normalization might be too aggressive for some sites
     return normalized
 
 def normalize_headers(headers: dict) -> dict:
@@ -62,6 +64,8 @@ def normalize_headers(headers: dict) -> dict:
     return normalized
 
 def should_crawl_url(url: str, base_domain: str, allow_external: bool, is_from_sitemap: bool = False, is_from_hreflang: bool = False, user_agent: str = "SQLiteCrawler/0.2", csv_urls: list = None, csv_seed_mode: bool = False) -> bool:
+    # TODO: Add support for robots.txt checking here instead of just in the main crawl loop
+    # NOTE: This would make the filtering more efficient by doing it upfront
     """Determine if a URL should be crawled based on classification and settings."""
     from .db import classify_url
     from .robots import is_url_crawlable
@@ -117,7 +121,9 @@ class HostDelayTracker:
         return adaptive_delay
     
     def update_delay_for_host(self, host: str, status_code: int, response_time: float = None):
-        """Update delay for a host based on response status and timing."""
+    # TODO: Maybe we should also track server response times to adjust delays dynamically?
+    # NOTE: This is a simple approach - more sophisticated rate limiting might be better
+    """Update delay for a host based on response status and timing."""
         if host not in self.host_delays:
             self.host_delays[host] = self.http_config.delay_between_requests
         

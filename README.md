@@ -1,6 +1,6 @@
 # SQLiteCrawler
 
-A high-performance, persistent web crawler built with Python and SQLite. Features intelligent URL discovery, redirect tracking, content extraction, and comprehensive data storage with optimized performance settings.
+A web crawler for those compfortable with Python and SQLite. Features URL discovery, redirect tracking, content extraction and comparison, including across sites. 
 
 ## 🚀 Quick Start
 
@@ -18,15 +18,12 @@ python main.py https://example.com --max-pages 100 --max-depth 3
 python main.py https://example.com --compare-domain https://staging.example.com
 ```
 
-## 📊 Performance
-
-SQLiteCrawler uses optimized settings for maximum performance:
-- **Parallel database operations** for faster I/O
-- **Optimized batch sizes** (100/500/1000/100) for better throughput
-- **Intelligent retry logic** with exponential backoff
-- **7.1% faster** than baseline configuration
-
-See [PERFORMANCE_ANALYSIS.md](PERFORMANCE_ANALYSIS.md) for detailed benchmark results.
+## History
+SQLiteCrawler started as a collection of ad-hoc scripts under the equally cleverly named SeoToolz but branched out to be a more fully formed crawler trying to solve a couple of personal pain points I have with the otherwise exceptional Screaming Frog
+ - **a queryable DB**: when I crawl the web I often want to get very specific information out of screaming frog that involves slow exports and a then excel lookups (or having to push them into a db and doing lot of joins)
+ - **retry functionality**: Sometimes webpages aren't available on the first pass, pages time out or because we're getting blocked. The ability to retry failed URLs removes the need for manual intervention 
+ - **The ability to compare across doamins**: SF does a solid job of comparing crawls of a single domain but is a lot less useful when you need to compare against staging sites, in particular when those sites don't entirely match up. SQLiteCrawler follows redirects on a staging site allowing you to compare the content on the origin, against the final destination on staging.  
+ - **List restricted crawling**: A personal pet peeve is the need to untick a large number of boxes to limit a crawl to only a list of provided URLs 
 
 ## ✨ Key Features
 
@@ -42,8 +39,9 @@ See [PERFORMANCE_ANALYSIS.md](PERFORMANCE_ANALYSIS.md) for detailed benchmark re
 - **Schema.org Extraction**: Extracts and validates JSON-LD, microdata, and RDFa structured data
 - **Hreflang Support**: Extracts and normalizes hreflang data from sitemaps
 - **CSV Crawl Support**: Crawl from predefined URL lists with restricted or seed modes
+- **Content Hashing**: SHA256 and SimHash for duplicate detection and content comparison
 
-### **Crawl Comparison** 🆕
+### **Crawl Comparison**
 - **Origin vs Staging**: Compare production and staging environments
 - **Content Analysis**: Track title, H1, meta description, and word count changes
 - **URL Move Detection**: Identify content moved via 301 redirects
@@ -115,7 +113,7 @@ python main.py --csv-file urls.csv --csv-column url
 python main.py --csv-file urls.csv --csv-seed
 ```
 
-### **Crawl Comparison** 🆕
+### **Crawl Comparison**
 
 ```bash
 # Basic comparison
@@ -140,8 +138,6 @@ python main.py https://example.com --compare-domain https://staging.example.com 
 - **Optional commercial pages analysis** with CSV input
 - **Optional link comparison** (added/lost internal links)
 
-**Output:** Creates a comparison database with analysis views for detailed reporting.
-
 ## 🗄️ Database Schema
 
 ### **Pages Database (`*_pages.db`)**
@@ -150,12 +146,13 @@ python main.py https://example.com --compare-domain https://staging.example.com 
 - `schema_data`: Structured data (JSON-LD, microdata, RDFa)
 
 ### **Crawl Database (`*_crawl.db`)**
-- `urls`: Discovered URLs with classification (internal/external/network/social)
+- `urls`: Discovered URLs with classification (internal/external/network/social/subdomain)
 - `frontier`: Crawl queue with priority scoring
 - `internal_links`: Link relationships with anchor text and XPath
 - `redirects`: Redirect chains and final destinations
 - `hreflang_sitemap`: Hreflang data from sitemaps
 - `robots_txt`: Robots.txt analysis and directives
+- `fragments`: URL fragments for better normalization
 
 ### **Comparison Database (`*_vs_*_comparison.db`)**
 - `comparison_urls`: URL mapping with content analysis and move tracking
@@ -166,12 +163,14 @@ python main.py https://example.com --compare-domain https://staging.example.com 
 
 ### **Standard Views**
 - `view_crawl_overview`: Comprehensive crawl summary
-- `view_internal_links`: Internal link analysis
-- `view_network_links`: Network link analysis  
-- `view_external_links`: External link analysis
+- `view_links_internal`: Internal link analysis
+- `view_links_network`: Network link analysis  
+- `view_links_external`: External link analysis
+- `view_links_subdomain`: Subdomain link analysis
 - `view_schema_data`: Structured data analysis
+- `view_hubs`: Pages with multiple child pages
 
-### **Comparison Views** 🆕
+### **Comparison Views**
 - `view_sitemap_changes`: URLs in origin vs staging sitemaps
 - `view_urls_missing`: URLs on origin not found on staging
 - `view_urls_new`: URLs on staging not found on origin
@@ -215,11 +214,18 @@ WHERE chain_length > 1;
 
 -- Analyze internal links
 SELECT source_url, target_url, anchor_text, is_image 
-FROM view_internal_links 
+FROM view_links_internal 
 WHERE is_image = 1;
+
+-- Find content duplicates
+SELECT url, content_hash_sha256, COUNT(*) as duplicate_count
+FROM content 
+WHERE content_hash_sha256 IS NOT NULL
+GROUP BY content_hash_sha256 
+HAVING COUNT(*) > 1;
 ```
 
-### **Comparison Analysis** 🆕
+### **Comparison Analysis**
 ```sql
 -- View content differences
 SELECT path, origin_title, staging_title, title_match, 
@@ -241,12 +247,12 @@ SELECT path FROM view_urls_missing;
 - Enable `--js` only when necessary (slower but captures dynamic content)
 - Use `--max-pages` for testing to avoid long crawls
 - Set appropriate `--delay` to be respectful to target servers
+- Use content hashing to identify duplicate content efficiently
 
 ## 📚 Documentation
 
-- [Performance Analysis](PERFORMANCE_ANALYSIS.md) - Detailed benchmark results
-- [Crawl Improvements](crawl_improvements.md) - Core crawler enhancement roadmap
-- [Comparison Improvements](comparison_improvements.md) - Comparison feature roadmap
+- [Roadmap](ROADMAP.md) - Development roadmap and feature planning
+- [Contributing Guidelines](CONTRIBUTING.md) - How to contribute to the project
 
 ## 🤝 Contributing
 
@@ -260,12 +266,3 @@ We welcome contributions! Please see our [Contributing Guidelines](CONTRIBUTING.
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 📞 Support
-
-- **Issues:** [GitHub Issues](https://github.com/user256/SQLiteCrawler/issues)
-- **Documentation:** [Wiki](https://github.com/user256/SQLiteCrawler/wiki)
-- **Community:** [Discussions](https://github.com/user256/SQLiteCrawler/discussions)
-
----
-
-*SQLiteCrawler - High-performance web crawling with comprehensive analysis capabilities*
