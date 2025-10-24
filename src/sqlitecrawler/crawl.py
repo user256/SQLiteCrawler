@@ -87,9 +87,9 @@ def should_crawl_url(url: str, base_domain: str, allow_external: bool, is_from_s
     if classification == 'internal':
         return is_url_crawlable(url, user_agent)
     
-    # Always crawl network URLs (from hreflang, but check robots.txt)
+    # Network URLs (from hreflang) only if external crawling is allowed
     if classification == 'network':
-        return is_url_crawlable(url, user_agent)
+        return allow_external and is_url_crawlable(url, user_agent)
     
     # Never crawl social media URLs
     if classification == 'social':
@@ -128,9 +128,9 @@ class HostDelayTracker:
         return adaptive_delay
     
     def update_delay_for_host(self, host: str, status_code: int, response_time: float = None):
-    # TODO: Maybe we should also track server response times to adjust delays dynamically?
-    # NOTE: This is a simple approach - more sophisticated rate limiting might be better
-    """Update delay for a host based on response status and timing."""
+        # TODO: Maybe we should also track server response times to adjust delays dynamically?
+        # NOTE: This is a simple approach - more sophisticated rate limiting might be better
+        """Update delay for a host based on response status and timing."""
         if host not in self.host_delays:
             self.host_delays[host] = self.http_config.delay_between_requests
         
@@ -625,7 +625,7 @@ async def crawl(start: str, use_js: bool = False, limits: CrawlLimits | None = N
                     # Only extract content and hash for 200 status HTML responses (not redirects)
                     if status == 200:
                         # Extract content from HTML
-                        content_data = await extract_content_from_html(text, headers, final_norm)
+                        content_data = await extract_content_from_html(text, headers, final_norm, base_domain)
                         if content_data['title'] or content_data['meta_description'] or content_data['h1_tags'] or content_data['h2_tags']:
                             # We'll need the URL ID, so we'll add this to content_to_write with a placeholder
                             # The actual URL ID will be resolved during batch processing

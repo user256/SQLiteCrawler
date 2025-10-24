@@ -63,12 +63,12 @@ def decompress_headers(encoded: bytes) -> dict:
     except Exception:
         return {}
 
-async def extract_content_from_html(html: str, headers: dict = None, base_url: str = None) -> dict:
+async def extract_content_from_html(html: str, headers: dict = None, base_url: str = None, base_domain: str = None) -> dict:
     """Extract title, meta description, robots, canonical, h1, h2 tags, word count, and schema data from HTML."""
     import asyncio
     import concurrent.futures
     
-    def _parse_html_sync(html_content: str, headers_dict: dict = None, base_url_str: str = None) -> dict:
+    def _parse_html_sync(html_content: str, headers_dict: dict = None, base_url_str: str = None, base_domain_str: str = None) -> dict:
         """Synchronous HTML parsing function to run in thread pool."""
         try:
             from bs4 import BeautifulSoup
@@ -90,14 +90,25 @@ async def extract_content_from_html(html: str, headers: dict = None, base_url: s
             canonical_tag = soup.find('link', attrs={'rel': 'canonical'})
             canonical_url = canonical_tag.get('href', '').strip() if canonical_tag else None
             
-            # Extract hreflang URLs from HTML head
+            # Extract hreflang URLs from HTML head (only for target domain pages)
             hreflang_urls = []
-            hreflang_links = soup.find_all('link', attrs={'rel': 'alternate', 'hreflang': True})
-            for link in hreflang_links:
-                href = link.get('href', '').strip()
-                hreflang = link.get('hreflang', '').strip()
-                if href and hreflang:
-                    hreflang_urls.append({'url': href, 'hreflang': hreflang})
+            if base_domain_str and base_url_str:
+                from urllib.parse import urlparse
+                current_domain = urlparse(base_url_str).netloc.lower()
+                # Remove www. prefix for comparison
+                if current_domain.startswith('www.'):
+                    current_domain = current_domain[4:]
+                if base_domain_str.startswith('www.'):
+                    base_domain_str = base_domain_str[4:]
+                
+                # Only extract hreflang from pages on the target domain
+                if current_domain == base_domain_str:
+                    hreflang_links = soup.find_all('link', attrs={'rel': 'alternate', 'hreflang': True})
+                    for link in hreflang_links:
+                        href = link.get('href', '').strip()
+                        hreflang = link.get('hreflang', '').strip()
+                        if href and hreflang:
+                            hreflang_urls.append({'url': href, 'hreflang': hreflang})
             
             # Extract HTML lang declaration (check both html and head tags)
             html_tag = soup.find('html')
@@ -204,7 +215,7 @@ async def extract_content_from_html(html: str, headers: dict = None, base_url: s
     # Run the synchronous parsing in a thread pool to avoid blocking the event loop
     loop = asyncio.get_event_loop()
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-        result = await loop.run_in_executor(executor, _parse_html_sync, html, headers, base_url)
+        result = await loop.run_in_executor(executor, _parse_html_sync, html, headers, base_url, base_domain)
     return result
 
 # ------------------ database connection pool ------------------
@@ -1241,9 +1252,13 @@ def classify_url(url: str, base_domain: str, is_from_sitemap: bool = False, is_f
     if url_domain.endswith('.' + base_domain):
         return 'subdomain'
     
-    # Network URLs are those found in hreflang (sitemap, HTTP headers, or page head)
+    # Network URLs are those found in hreflang AND are part of the same network
     if is_from_hreflang:
-        return 'network'
+        # Check if it's actually part of the same network
+        if url_domain == base_domain or url_domain.endswith('.' + base_domain):
+            return 'network'
+        else:
+            return 'external'  # Different domain, so external
     
     # Everything else is external
     return 'external'
