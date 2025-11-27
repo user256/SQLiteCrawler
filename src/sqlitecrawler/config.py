@@ -25,6 +25,8 @@ class HttpConfig:
     timeout: int = int(os.getenv("SQLITECRAWLER_TIMEOUT", "20"))
     max_concurrency: int = int(os.getenv("SQLITECRAWLER_CONCURRENCY", "5"))
     delay_between_requests: float = float(os.getenv("SQLITECRAWLER_DELAY", "0.2"))
+    http_backend: str = os.getenv("SQLITECRAWLER_HTTP_BACKEND", "auto")
+    curl_impersonate: str = os.getenv("SQLITECRAWLER_CURL_IMPERSONATE", "chrome120")
     respect_robots_txt: bool = os.getenv("SQLITECRAWLER_RESPECT_ROBOTS", "1") == "1"
     ignore_robots_crawlability: bool = False
     skip_robots_sitemaps: bool = False
@@ -49,6 +51,10 @@ class HttpConfig:
     sitemap_ttl: int = int(os.getenv("SQLITECRAWLER_SITEMAP_TTL", "3600"))  # 1 hour
     # Authentication configuration
     auth: AuthConfig = None
+
+    def __post_init__(self):
+        self.http_backend = (self.http_backend or "auto").lower()
+        self.curl_impersonate = self.curl_impersonate or "chrome120"
 
 @dataclass
 class CrawlLimits:

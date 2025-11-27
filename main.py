@@ -50,6 +50,10 @@ Examples:
                    help="Skip parsing robots.txt for sitemap discovery (only use common sitemap locations)")
     p.add_argument("--skip-sitemaps", action="store_true",
                    help="Skip all sitemap discovery and processing (crawl only the provided URL)")
+    p.add_argument("--http-backend", choices=["auto", "aiohttp", "httpx", "curl"], default="auto",
+                   help="HTTP client backend. 'auto' selects httpx when HTTP/2 is enabled, otherwise aiohttp.")
+    p.add_argument("--curl-impersonate", type=str, default=None,
+                   help="curl_cffi impersonation profile when using --http-backend=curl (e.g., chrome120, safari17, random).")
     p.add_argument("--allow-external", action="store_true",
                    help="Allow crawling external URLs (default: internal only)")
     p.add_argument("--max-workers", type=int, default=2,
@@ -216,11 +220,12 @@ Examples:
             print(f"Error reading CSV file: {e}")
             sys.exit(1)
     
+    default_http_cfg = HttpConfig()
     http_config = HttpConfig(
         user_agent=user_agent,
-        timeout=args.timeout if args.timeout is not None else HttpConfig().timeout,
-        max_concurrency=args.concurrency if args.concurrency is not None else HttpConfig().max_concurrency,
-        delay_between_requests=args.delay if args.delay is not None else HttpConfig().delay_between_requests,
+        timeout=args.timeout if args.timeout is not None else default_http_cfg.timeout,
+        max_concurrency=args.concurrency if args.concurrency is not None else default_http_cfg.max_concurrency,
+        delay_between_requests=args.delay if args.delay is not None else default_http_cfg.delay_between_requests,
         respect_robots_txt=not args.ignore_robots,
         ignore_robots_crawlability=args.ignore_robots,
         skip_robots_sitemaps=args.skip_robots_sitemaps,
@@ -231,11 +236,13 @@ Examples:
         retry_delay=args.retry_delay,
         retry_backoff_factor=args.retry_backoff,
         enable_adaptive_delay=not args.no_adaptive_delay,
-        min_delay=args.min_delay if args.min_delay is not None else HttpConfig().min_delay,
-        max_delay=args.max_delay if args.max_delay is not None else HttpConfig().max_delay,
-        delay_increase_factor=args.delay_increase if args.delay_increase is not None else HttpConfig().delay_increase_factor,
-        delay_decrease_factor=args.delay_decrease if args.delay_decrease is not None else HttpConfig().delay_decrease_factor,
+        min_delay=args.min_delay if args.min_delay is not None else default_http_cfg.min_delay,
+        max_delay=args.max_delay if args.max_delay is not None else default_http_cfg.max_delay,
+        delay_increase_factor=args.delay_increase if args.delay_increase is not None else default_http_cfg.delay_increase_factor,
+        delay_decrease_factor=args.delay_decrease if args.delay_decrease is not None else default_http_cfg.delay_decrease_factor,
         enable_conditional_requests=not args.no_conditional_requests,
+        http_backend=args.http_backend if args.http_backend is not None else default_http_cfg.http_backend,
+        curl_impersonate=args.curl_impersonate if args.curl_impersonate else default_http_cfg.curl_impersonate,
         auth=auth_config,
     )
     
@@ -269,6 +276,9 @@ Examples:
         print(f"  Conditional Requests: {http_config.enable_conditional_requests}")
         print(f"  Allow external URLs: {args.allow_external}")
         print(f"  Max workers: {args.max_workers}")
+        print(f"  HTTP backend: {http_config.http_backend}")
+        if http_config.http_backend == "curl":
+            print(f"  curl impersonate: {http_config.curl_impersonate}")
         if auth_config:
             print(f"  Authentication: {auth_config.auth_type} (user: {auth_config.username})")
             if auth_config.domain:

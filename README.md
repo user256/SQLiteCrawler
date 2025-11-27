@@ -49,6 +49,7 @@ SQLiteCrawler started as a collection of ad-hoc scripts under the equally clever
 
 ### **Performance & Reliability**
 - **HTTP/2 & Brotli Support**: Modern HTTP/2 client with Brotli compression
+- **curl_cffi Backend**: Optional curl-powered backend with TLS/browser impersonation
 - **Intelligent Frontier Scoring**: Prioritizes URLs by depth, sitemap priority, and inlinks
 - **Database Normalization**: Efficient storage with URL IDs and compressed content
 - **Async Performance**: Concurrent requests with configurable limits
@@ -89,6 +90,22 @@ python main.py https://example.com --max-pages 100 --max-depth 3
 # Crawl with custom concurrency
 python main.py https://example.com --concurrency 20 --delay 0.5
 ```
+
+### **Hardened HTTP / curl_cffi Backend**
+
+```bash
+# Use curl_cffi with Chrome 120 impersonation
+python main.py https://example.com --http-backend curl --curl-impersonate chrome120
+```
+
+Backend options (`--http-backend`):
+
+- `auto` *(default)* – uses httpx when HTTP/2 is enabled, otherwise aiohttp.
+- `httpx` – always use httpx (HTTP/2 + Brotli) for best performance on friendly sites.
+- `aiohttp` – fallback client if you hit httpx-specific issues.
+- `curl` – routes traffic through curl_cffi with full cURL-style TLS fingerprints and header ordering, ideal for sites behind protection layers.
+
+You can also set the impersonation profile via `--curl-impersonate` (e.g., `chrome120`, `safari17`, `edge120`) or the `SQLITECRAWLER_CURL_IMPERSONATE` env var. Use `--curl-impersonate random` to rotate between common browser profiles on each request.
 
 ### **Authentication**
 

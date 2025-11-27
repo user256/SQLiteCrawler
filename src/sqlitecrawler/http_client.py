@@ -7,8 +7,24 @@ import httpx
 import brotli
 import json
 from typing import Dict, Tuple, List, Optional
-from urllib.parse import urlparse
+import random
+from urllib.parse import urlparse, urljoin
 from .config import HttpConfig, AuthConfig
+
+try:
+    from curl_cffi import requests as curl_requests
+except ImportError:
+    curl_requests = None
+
+CURL_IMPERSONATE_OPTIONS = [
+    "chrome120",
+    "chrome119",
+    "chrome118",
+    "edge120",
+    "safari17",
+    "safari16",
+    "firefox118",
+]
 
 
 def _should_use_auth(url: str, auth: AuthConfig) -> bool:
@@ -77,6 +93,17 @@ def _decompress_content(content: bytes, encoding: str) -> bytes:
         return content
 
 
+def _build_headers(cfg: HttpConfig, conditional_headers: Dict[str, str]) -> Dict[str, str]:
+    headers = {
+        "User-Agent": cfg.user_agent,
+        **_get_compression_headers(),
+        **_get_auth_headers(cfg.auth)
+    }
+    if conditional_headers:
+        headers.update(conditional_headers)
+    return headers
+
+
 async def fetch(url: str, cfg: HttpConfig, conditional_headers: Dict[str, str] = None) -> Tuple[int, str, Dict[str, str], str, str]:
     """Return (status, final_url, headers, text, url) for a single request with HTTP/2 and Brotli support."""
     
@@ -86,21 +113,13 @@ async def fetch(url: str, cfg: HttpConfig, conditional_headers: Dict[str, str] =
         auth = _create_auth(cfg.auth)
     
     # Prepare headers
-    headers = {
-        "User-Agent": cfg.user_agent,
-        **_get_compression_headers(),
-        **_get_auth_headers(cfg.auth)
-    }
-    
-    # Add conditional headers if provided
-    if conditional_headers:
-        headers.update(conditional_headers)
+    headers = _build_headers(cfg, conditional_headers or {})
     
     # Create HTTP/2 client with timeout
     timeout = httpx.Timeout(cfg.timeout)
     
     async with httpx.AsyncClient(
-        http2=True,  # Enable HTTP/2
+        http2=cfg.enable_http2,
         timeout=timeout,
         auth=auth,
         headers=headers,
@@ -140,21 +159,13 @@ async def fetch_with_redirect_tracking(url: str, cfg: HttpConfig, conditional_he
         auth = _create_auth(cfg.auth)
     
     # Prepare headers
-    headers = {
-        "User-Agent": cfg.user_agent,
-        **_get_compression_headers(),
-        **_get_auth_headers(cfg.auth)
-    }
-    
-    # Add conditional headers if provided
-    if conditional_headers:
-        headers.update(conditional_headers)
+    headers = _build_headers(cfg, conditional_headers or {})
     
     # Create HTTP/2 client with timeout
     timeout = httpx.Timeout(cfg.timeout)
     
     async with httpx.AsyncClient(
-        http2=True,  # Enable HTTP/2
+        http2=cfg.enable_http2,
         timeout=timeout,
         auth=auth,
         headers=headers,
@@ -220,17 +231,13 @@ async def fetch_batch(urls: List[str], cfg: HttpConfig, max_concurrency: int = 5
         auth = _create_auth(cfg.auth)
     
     # Prepare headers
-    headers = {
-        "User-Agent": cfg.user_agent,
-        **_get_compression_headers(),
-        **_get_auth_headers(cfg.auth)
-    }
+    headers = _build_headers(cfg, {})
     
     # Create HTTP/2 client with timeout
     timeout = httpx.Timeout(cfg.timeout)
     
     async with httpx.AsyncClient(
-        http2=True,  # Enable HTTP/2
+        http2=cfg.enable_http2,
         timeout=timeout,
         auth=auth,
         headers=headers,
@@ -303,3 +310,122 @@ def get_http_version_info() -> Dict[str, str]:
         "brotli_support": "enabled",
         "compression_formats": "gzip, deflate, br (brotli)"
     }
+
+
+# ---------------------- curl_cffi backend ----------------------
+
+CURL_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+
+
+def _ensure_curl_backend():
+    if curl_requests is None:
+        raise RuntimeError(
+            "curl_cffi is not installed. Install it with `pip install curl_cffi` "
+            "or disable the curl backend."
+        )
+
+
+def _resolve_curl_impersonate(cfg: HttpConfig) -> str:
+    value = (cfg.curl_impersonate or "chrome120").strip().lower()
+    if value == "random":
+        return random.choice(CURL_IMPERSONATE_OPTIONS)
+    return value
+
+
+def _curl_request_kwargs(cfg: HttpConfig, allow_redirects: bool, auth_tuple: Optional[Tuple[str, str]]):
+    kwargs = {
+        "timeout": cfg.timeout,
+        "allow_redirects": allow_redirects,
+        "impersonate": _resolve_curl_impersonate(cfg),
+    }
+    if auth_tuple:
+        kwargs["auth"] = auth_tuple
+    return kwargs
+
+
+def _decode_response_content(content: bytes, headers: Dict[str, str]) -> str:
+    encoding = headers.get("content-encoding", "").lower()
+    if encoding:
+        try:
+            content = _decompress_content(content, encoding)
+        except Exception:
+            pass
+    return content.decode("utf-8", errors="ignore")
+
+
+def _curl_fetch_sync(url: str, cfg: HttpConfig, conditional_headers: Dict[str, str]) -> Tuple[int, str, Dict[str, str], str, str]:
+    auth_tuple = None
+    if _should_use_auth(url, cfg.auth):
+        auth_tuple = _create_auth(cfg.auth)
+    
+    headers = _build_headers(cfg, conditional_headers)
+    
+    with curl_requests.Session() as session:
+        session.headers.update(headers)
+        kwargs = _curl_request_kwargs(cfg, True, auth_tuple)
+        response = session.get(url, **kwargs)
+        hdrs = dict(response.headers)
+        text = _decode_response_content(response.content, hdrs)
+        return response.status_code, str(response.url), hdrs, text, url
+
+
+def _curl_fetch_with_redirects_sync(
+    url: str,
+    cfg: HttpConfig,
+    conditional_headers: Dict[str, str]
+) -> Tuple[int, str, Dict[str, str], str, str, str]:
+    auth_tuple = None
+    if _should_use_auth(url, cfg.auth):
+        auth_tuple = _create_auth(cfg.auth)
+    
+    headers = _build_headers(cfg, conditional_headers)
+    redirect_chain: List[Dict[str, object]] = []
+    final_response = None
+    current_url = url
+    
+    with curl_requests.Session() as session:
+        session.headers.update(headers)
+        kwargs = _curl_request_kwargs(cfg, False, auth_tuple)
+        
+        for _ in range(10):
+            response = session.get(current_url, **kwargs)
+            redirect_chain.append({
+                "url": current_url,
+                "status": response.status_code,
+                "headers": dict(response.headers)
+            })
+            
+            if response.status_code in CURL_REDIRECT_STATUSES:
+                location = response.headers.get("location")
+                if location:
+                    if location.startswith("/"):
+                        current_url = urljoin(current_url, location)
+                    else:
+                        current_url = urljoin(current_url, location)
+                    continue
+            
+            final_response = response
+            break
+    
+    if final_response is None:
+        return 0, url, {}, "", url, json.dumps(redirect_chain)
+    
+    hdrs = dict(final_response.headers)
+    text = _decode_response_content(final_response.content, hdrs)
+    return final_response.status_code, str(final_response.url), hdrs, text, url, json.dumps(redirect_chain)
+
+
+async def fetch_curl(url: str, cfg: HttpConfig, conditional_headers: Dict[str, str] = None) -> Tuple[int, str, Dict[str, str], str, str]:
+    _ensure_curl_backend()
+    conditional_headers = conditional_headers or {}
+    return await asyncio.to_thread(_curl_fetch_sync, url, cfg, conditional_headers)
+
+
+async def fetch_curl_with_redirect_tracking(
+    url: str,
+    cfg: HttpConfig,
+    conditional_headers: Dict[str, str] = None
+) -> Tuple[int, str, Dict[str, str], str, str, str]:
+    _ensure_curl_backend()
+    conditional_headers = conditional_headers or {}
+    return await asyncio.to_thread(_curl_fetch_with_redirects_sync, url, cfg, conditional_headers)

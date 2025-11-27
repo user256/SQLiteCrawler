@@ -5,7 +5,13 @@ import json
 from typing import Dict, Tuple, List
 from urllib.parse import urlparse
 from .config import HttpConfig, AuthConfig
-from .http_client import fetch as http2_fetch, fetch_with_redirect_tracking as http2_fetch_with_redirect_tracking, fetch_batch as http2_fetch_batch
+from .http_client import (
+    fetch as httpx_fetch,
+    fetch_with_redirect_tracking as httpx_fetch_with_redirect_tracking,
+    fetch_batch as httpx_fetch_batch,
+    fetch_curl,
+    fetch_curl_with_redirect_tracking,
+)
 
 def _should_use_auth(url: str, auth: AuthConfig) -> bool:
     """Check if authentication should be used for this URL."""
@@ -51,12 +57,22 @@ def _get_auth_headers(auth: AuthConfig) -> Dict[str, str]:
     
     return headers
 
+def _resolve_backend(cfg: HttpConfig) -> str:
+    backend = (cfg.http_backend or "auto").lower()
+    if backend == "auto":
+        return "httpx" if cfg.enable_http2 else "aiohttp"
+    return backend
+
 async def fetch(url: str, cfg: HttpConfig, conditional_headers: Dict[str, str] = None) -> Tuple[int, str, Dict[str, str], str, str]:
     """Return (status, final_url, headers, text, url) for a single request."""
     
-    # Use HTTP/2 client if enabled
-    if cfg.enable_http2:
-        return await http2_fetch(url, cfg, conditional_headers)
+    backend = _resolve_backend(cfg)
+    
+    if backend == "curl":
+        return await fetch_curl(url, cfg, conditional_headers)
+    
+    if backend == "httpx":
+        return await httpx_fetch(url, cfg, conditional_headers)
     
     # Fallback to aiohttp
     timeout = aiohttp.ClientTimeout(total=cfg.timeout)
@@ -87,9 +103,13 @@ async def fetch(url: str, cfg: HttpConfig, conditional_headers: Dict[str, str] =
 async def fetch_with_redirect_tracking(url: str, cfg: HttpConfig, conditional_headers: Dict[str, str] = None) -> Tuple[int, str, Dict[str, str], str, str, str]:
     """Return (status, final_url, headers, text, url, redirect_chain_json) for a single request with redirect tracking."""
     
-    # Use HTTP/2 client if enabled
-    if cfg.enable_http2:
-        return await http2_fetch_with_redirect_tracking(url, cfg, conditional_headers)
+    backend = _resolve_backend(cfg)
+    
+    if backend == "curl":
+        return await fetch_curl_with_redirect_tracking(url, cfg, conditional_headers)
+    
+    if backend == "httpx":
+        return await httpx_fetch_with_redirect_tracking(url, cfg, conditional_headers)
     
     # Fallback to aiohttp
     timeout = aiohttp.ClientTimeout(total=cfg.timeout)
